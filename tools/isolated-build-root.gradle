@@ -1,0 +1,8 @@
+gradle.beforeProject { project ->
+    def isolatedRoot = System.getenv("PORTWEAVE_ISOLATED_BUILD_ROOT")
+    if (isolatedRoot == null || isolatedRoot.trim().isEmpty()) {
+        throw new GradleException("PORTWEAVE_ISOLATED_BUILD_ROOT must name an empty build directory")
+    }
+    def projectPath = project.path == ":" ? "root" : project.path.substring(1).replace(":", File.separator)
+    project.layout.buildDirectory.set(new File(isolatedRoot, projectPath))
+}
