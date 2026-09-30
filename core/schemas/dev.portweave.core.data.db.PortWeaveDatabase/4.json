@@ -1,0 +1,443 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 4,
+    "identityHash": "7cc0aeb229bf30daabacf4b199e9a2ca",
+    "entities": [
+      {
+        "tableName": "tunnel_config",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `local_port` INTEGER NOT NULL, `type` TEXT NOT NULL, `auto_recover` INTEGER NOT NULL, `favorite` INTEGER NOT NULL, `sort_order` INTEGER NOT NULL, `revision` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localPort",
+            "columnName": "local_port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "autoRecover",
+            "columnName": "auto_recover",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "favorite",
+            "columnName": "favorite",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sortOrder",
+            "columnName": "sort_order",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "ssh_detail",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`config_id` TEXT NOT NULL, `dial_host` TEXT NOT NULL, `dial_port` INTEGER NOT NULL, `dependency_config_id` TEXT, `logical_host` TEXT NOT NULL, `logical_port` INTEGER NOT NULL, `username` TEXT NOT NULL, `auth_method` TEXT NOT NULL, `password_ref` TEXT, `private_key_ref` TEXT, `passphrase_ref` TEXT, `host_fingerprint_ref` TEXT, `remote_target_host` TEXT NOT NULL, `remote_target_port` INTEGER NOT NULL, `host_key_policy` TEXT NOT NULL, `connect_timeout_seconds` INTEGER NOT NULL, `keep_alive_seconds` INTEGER NOT NULL, PRIMARY KEY(`config_id`), FOREIGN KEY(`config_id`) REFERENCES `tunnel_config`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "configId",
+            "columnName": "config_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dialHost",
+            "columnName": "dial_host",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dialPort",
+            "columnName": "dial_port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dependencyConfigId",
+            "columnName": "dependency_config_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "logicalHost",
+            "columnName": "logical_host",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "logicalPort",
+            "columnName": "logical_port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "username",
+            "columnName": "username",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authMethod",
+            "columnName": "auth_method",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "passwordRef",
+            "columnName": "password_ref",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "privateKeyRef",
+            "columnName": "private_key_ref",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "passphraseRef",
+            "columnName": "passphrase_ref",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "hostFingerprintRef",
+            "columnName": "host_fingerprint_ref",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "remoteTargetHost",
+            "columnName": "remote_target_host",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "remoteTargetPort",
+            "columnName": "remote_target_port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hostKeyPolicy",
+            "columnName": "host_key_policy",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "connectTimeoutSeconds",
+            "columnName": "connect_timeout_seconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "keepAliveSeconds",
+            "columnName": "keep_alive_seconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "config_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_ssh_detail_config_id",
+            "unique": false,
+            "columnNames": [
+              "config_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_ssh_detail_config_id` ON `${TABLE_NAME}` (`config_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "tunnel_config",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "config_id"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "stcp_detail",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`config_id` TEXT NOT NULL, `dial_host` TEXT NOT NULL, `dial_port` INTEGER NOT NULL, `dependency_config_id` TEXT, `logical_host` TEXT NOT NULL, `logical_port` INTEGER NOT NULL, `token_ref` TEXT, `user` TEXT, `server_user` TEXT, `server_name` TEXT NOT NULL, `secret_key_ref` TEXT, `wire_protocol` TEXT NOT NULL, `use_encryption` INTEGER NOT NULL, `use_compression` INTEGER NOT NULL, `tls_leaf_pin_sha256` TEXT, `connect_timeout_seconds` INTEGER NOT NULL, PRIMARY KEY(`config_id`), FOREIGN KEY(`config_id`) REFERENCES `tunnel_config`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "configId",
+            "columnName": "config_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dialHost",
+            "columnName": "dial_host",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dialPort",
+            "columnName": "dial_port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dependencyConfigId",
+            "columnName": "dependency_config_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "logicalHost",
+            "columnName": "logical_host",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "logicalPort",
+            "columnName": "logical_port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tokenRef",
+            "columnName": "token_ref",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "user",
+            "columnName": "user",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "serverUser",
+            "columnName": "server_user",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "serverName",
+            "columnName": "server_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "secretKeyRef",
+            "columnName": "secret_key_ref",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "wireProtocol",
+            "columnName": "wire_protocol",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "useEncryption",
+            "columnName": "use_encryption",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "useCompression",
+            "columnName": "use_compression",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tlsLeafPinSha256",
+            "columnName": "tls_leaf_pin_sha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "connectTimeoutSeconds",
+            "columnName": "connect_timeout_seconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "config_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_stcp_detail_config_id",
+            "unique": false,
+            "columnNames": [
+              "config_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_stcp_detail_config_id` ON `${TABLE_NAME}` (`config_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "tunnel_config",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "config_id"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "tunnel_event",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `config_id` TEXT NOT NULL, `generation` INTEGER NOT NULL, `level` TEXT NOT NULL, `event_code` TEXT NOT NULL, `message_key` TEXT NOT NULL, `sanitized_args_json` TEXT NOT NULL, `elapsed_realtime_millis` INTEGER NOT NULL, `occurred_at` INTEGER NOT NULL, `trace_id` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "configId",
+            "columnName": "config_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "generation",
+            "columnName": "generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "level",
+            "columnName": "level",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventCode",
+            "columnName": "event_code",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "messageKey",
+            "columnName": "message_key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sanitizedArgsJson",
+            "columnName": "sanitized_args_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "elapsedRealtimeMillis",
+            "columnName": "elapsed_realtime_millis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurred_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "traceId",
+            "columnName": "trace_id",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_tunnel_event_config_id_occurred_at",
+            "unique": false,
+            "columnNames": [
+              "config_id",
+              "occurred_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_tunnel_event_config_id_occurred_at` ON `${TABLE_NAME}` (`config_id`, `occurred_at`)"
+          },
+          {
+            "name": "index_tunnel_event_occurred_at",
+            "unique": false,
+            "columnNames": [
+              "occurred_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_tunnel_event_occurred_at` ON `${TABLE_NAME}` (`occurred_at`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '7cc0aeb229bf30daabacf4b199e9a2ca')"
+    ]
+  }
+}
