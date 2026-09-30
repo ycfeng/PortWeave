@@ -1,0 +1,16 @@
+*.iml
+.gradle/
+.kotlin/
+.reproducible-build/
+.idea/
+local.properties
+**/build/
+captures/
+/temp/
+.externalNativeBuild/
+.cxx/
+*.jks
+*.keystore
+signing.properties
+*.log
+temp

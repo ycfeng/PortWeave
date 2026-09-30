@@ -1,0 +1,9 @@
+PortWeave
+Copyright (c) 2026 PortWeave contributors
+
+PortWeave includes modified code derived from OC Deck's pure-Kotlin frpc STCP
+visitor, Copyright (c) 2026 ycfeng, distributed under the MIT License.
+
+PortWeave implements protocol behavior compatible with the frp project,
+distributed under the Apache License 2.0. See THIRD_PARTY_NOTICES.md and the
+license texts under third_party/licenses for the complete attribution set.
