@@ -1,0 +1,89 @@
+{
+  "sessionConfig": {
+    "serverAddr": "bridge-frps.invalid",
+    "serverPort": 7000,
+    "authToken": "<redacted>",
+    "user": "bridge-user",
+    "transportProtocol": "tcp",
+    "wireProtocol": "v2"
+  },
+  "sessionConfigDefaults": {
+    "serverAddr": "bridge-defaults-frps.invalid",
+    "serverPort": 7000,
+    "authToken": "<redacted>"
+  },
+  "visitorConfig": {
+    "name": "bridge-visitor",
+    "serverName": "bridge-server",
+    "serverUser": "bridge-server-user",
+    "secretKey": "<redacted>",
+    "bindAddr": "127.0.0.1",
+    "bindPort": 4096,
+    "useEncryption": false,
+    "useCompression": false
+  },
+  "visitorConfigDefaults": {
+    "name": "bridge-defaults-visitor",
+    "serverName": "bridge-defaults-server",
+    "secretKey": "<redacted>",
+    "bindPort": 4096
+  },
+  "ensureVisitorResult": {
+    "bindPort": 4096,
+    "desiredRevision": 4294967297
+  },
+  "visitorReadyResult": {
+    "name": "bridge-visitor",
+    "desiredRevision": 4294967297,
+    "phase": "ready",
+    "listenerBound": true,
+    "boundControlEpoch": 8589934593,
+    "lastError": "<redacted>"
+  },
+  "visitorReadyResultWithoutError": {
+    "name": "bridge-defaults-visitor",
+    "desiredRevision": 4294967297,
+    "phase": "ready",
+    "listenerBound": true,
+    "boundControlEpoch": 8589934593
+  },
+  "visitorRuntimeState": {
+    "desiredRevision": 4294967297,
+    "phase": "ready",
+    "listenerBound": true,
+    "boundControlEpoch": 8589934593,
+    "lastError": "<redacted>"
+  },
+  "visitorRuntimeStateWithoutError": {
+    "desiredRevision": 4294967297,
+    "phase": "pending",
+    "listenerBound": false,
+    "boundControlEpoch": 0
+  },
+  "state": {
+    "sessionId": "bridge-session",
+    "phase": "open",
+    "configRevision": 4294967299,
+    "controlEpoch": 8589934593,
+    "lastError": "<redacted>",
+    "visitors": {
+      "bridge-visitor": {
+        "desiredRevision": 4294967297,
+        "phase": "ready",
+        "listenerBound": true,
+        "boundControlEpoch": 8589934593,
+        "lastError": "<redacted>"
+      }
+    }
+  },
+  "stateWithoutOptionalFields": {
+    "sessionId": "bridge-defaults-session",
+    "phase": "closed",
+    "configRevision": 0,
+    "controlEpoch": 0
+  },
+  "stopSessionResult": {
+    "sessionId": "bridge-session",
+    "phase": "closed"
+  }
+}

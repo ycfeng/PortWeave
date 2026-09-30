@@ -1,0 +1,513 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": "k0-go-oracle-v5",
+  "pins": {
+    "bridge": "0.3.19-frp0.69.1-p6",
+    "frp": "github.com/fatedier/frp@v0.69.1 (frp-v0.69.1-p6)",
+    "golib": "github.com/fatedier/golib@v0.7.0",
+    "snappy": "github.com/golang/snappy@v0.0.4",
+    "yamux": "github.com/fatedier/yamux@v0.0.0-20250825093530-d0154be01cd6"
+  },
+  "provenance": {
+    "synthetic": true,
+    "generator": "frpc-stcp-visitor-go/cmd/contractfixture",
+    "source": "Deterministic Go oracle over the bridge DTO contract, pinned frp/golib/snappy APIs, and traffic recorded from paired pinned yamux Client/Server sessions over in-memory connections; no captured external traffic.",
+    "license": "MIT",
+    "containsCapturedTraffic": false,
+    "containsRawSecrets": false
+  },
+  "limits": {
+    "wireV1JsonLength": 10240,
+    "wireV2FramePayload": 65536,
+    "yamuxHeader": 12,
+    "yamuxInitialWindow": 262144,
+    "yamuxFrpStreamWindow": 6291456
+  },
+  "entries": [
+    {
+      "id": "bridge-dto-contract",
+      "path": "bridge/dto-contract.json",
+      "layer": "bridge-json",
+      "length": 2268,
+      "sha256": "7838a89cfec3733af545183240b98c75390cffc61bbde706642f2ab3bb6d5e0c",
+      "expected": "Go/Kotlin DTO decode and encode semantics match"
+    },
+    {
+      "id": "snappy-cfb-framed-compressed",
+      "path": "compression/snappy/cfb/compressed.bin",
+      "layer": "snappy-cfb-framed",
+      "length": 40,
+      "sha256": "5bfe88edd7d471295ef991c5468aad10a209fc02c5f4035258354134a9cb2ec8",
+      "expected": "wire=CFB(Snappy framed); decode-order=CFB-then-Snappy"
+    },
+    {
+      "id": "snappy-framed-boundary-65537",
+      "path": "compression/snappy/framed/boundary-65537.bin",
+      "layer": "snappy-framed",
+      "length": 3104,
+      "sha256": "b94fcdf16ae72c70bd1efd824475d3e6c5dbaf8ac956620f54a32fa2d82b6049",
+      "expected": "chunks=compressed,uncompressed; decode=repeat-byte(0x61,65537)"
+    },
+    {
+      "id": "snappy-framed-compressed",
+      "path": "compression/snappy/framed/compressed.bin",
+      "layer": "snappy-framed",
+      "length": 24,
+      "sha256": "969e8f5b4a5b1fb9cbee14d3e036d126af241d51d571e4bd439da256b40fb3c0",
+      "expected": "chunks=compressed; decode=repeat-byte(0x61,20)"
+    },
+    {
+      "id": "snappy-framed-uncompressed",
+      "path": "compression/snappy/framed/uncompressed.bin",
+      "layer": "snappy-framed",
+      "length": 274,
+      "sha256": "8d51f46c843a79aba4765b930b1a5a07b440a93b366c101b0e29ebd0ebcf17b4",
+      "expected": "chunks=uncompressed; decode=byte-sequence-mod-256(256)"
+    },
+    {
+      "id": "snappy-raw-compressed",
+      "path": "compression/snappy/raw/compressed.bin",
+      "layer": "snappy-raw",
+      "length": 6,
+      "sha256": "0ea0dc35bbe371aabe7b8c074784890d0e20c921efa62108fd1e8c1d5a89a01b",
+      "expected": "decode=repeat-byte(0x61,20)"
+    },
+    {
+      "id": "control-v1-client-cfb",
+      "path": "control/v1/cfb/client-to-server.bin",
+      "layer": "control-v1-cfb",
+      "length": 211,
+      "sha256": "2d7fc8ba6b1395f632a047435b1f99864883a6ee9aa7a76370a6f239954eb00c",
+      "expected": "decrypt=client-to-server plaintext"
+    },
+    {
+      "id": "control-v1-server-cfb",
+      "path": "control/v1/cfb/server-to-client.bin",
+      "layer": "control-v1-cfb",
+      "length": 38,
+      "sha256": "a4940585bac93ebe81774cabfd5c0339d67a0be55c186b995e773909420727d4",
+      "expected": "decrypt=server-to-client plaintext"
+    },
+    {
+      "id": "control-v1-client-plain",
+      "path": "control/v1/plain/client-to-server.bin",
+      "layer": "control-v1-plaintext",
+      "length": 195,
+      "sha256": "48c2b657364ff948368f481d24a52b50053185d5bd527ce3dfcfb218fb1c6405",
+      "expected": "messages=Ping,NewWorkConn"
+    },
+    {
+      "id": "control-v1-server-plain",
+      "path": "control/v1/plain/server-to-client.bin",
+      "layer": "control-v1-plaintext",
+      "length": 22,
+      "sha256": "05557f82197a78d626b03e024e791534ccf6c0d96e2fb36f7ea7d85d7483cae3",
+      "expected": "messages=Pong,ReqWorkConn"
+    },
+    {
+      "id": "control-v2-aes-256-gcm-client",
+      "path": "control/v2/aes-256-gcm/client-to-server.bin",
+      "layer": "control-v2-aead",
+      "length": 249,
+      "sha256": "f45e3e88d2b697f06fc1965301055cf66b7720c7807172a95448a76c851edba1",
+      "expected": "decrypt=server-role; integrity=authenticated"
+    },
+    {
+      "id": "control-v2-aes-256-gcm-server",
+      "path": "control/v2/aes-256-gcm/server-to-client.bin",
+      "layer": "control-v2-aead",
+      "length": 76,
+      "sha256": "4ca7deb9bc86af910a834855796dc34d07e907036921e761a4b145847b3dd0e6",
+      "expected": "decrypt=client-role; integrity=authenticated"
+    },
+    {
+      "id": "control-v2-client-plain",
+      "path": "control/v2/plain/client-to-server.bin",
+      "layer": "control-v2-plaintext",
+      "length": 197,
+      "sha256": "c7cb0ef8afa7c149c46ffd3bd99f7cf0d973eb85c10f114262eca72cb273b1fe",
+      "expected": "messages=Ping,NewWorkConn"
+    },
+    {
+      "id": "control-v2-server-plain",
+      "path": "control/v2/plain/server-to-client.bin",
+      "layer": "control-v2-plaintext",
+      "length": 24,
+      "sha256": "4bf6679517ebebc9318c9794a58b2f6294b7df26d5535cffff895bf9949d1a2f",
+      "expected": "messages=Pong,ReqWorkConn"
+    },
+    {
+      "id": "control-v2-xchacha20-poly1305-client",
+      "path": "control/v2/xchacha20-poly1305/client-to-server.bin",
+      "layer": "control-v2-aead",
+      "length": 261,
+      "sha256": "8b14d22790021af2a327a919377a638ffabf46ff260f6d66908ab46e258fb612",
+      "expected": "decrypt=server-role; integrity=authenticated"
+    },
+    {
+      "id": "control-v2-xchacha20-poly1305-server",
+      "path": "control/v2/xchacha20-poly1305/server-to-client.bin",
+      "layer": "control-v2-aead",
+      "length": 88,
+      "sha256": "ddaf34b642c6d490effb523ca3823349d5c28e44cad4835282d5fc0427e31e9a",
+      "expected": "decrypt=client-role; integrity=authenticated"
+    },
+    {
+      "id": "wire-v1-login-response",
+      "path": "wire/v1/login-response.bin",
+      "layer": "wire-v1",
+      "length": 64,
+      "sha256": "f98511aa08234b56314b79bfc0e85600e9fb785203aa3f24591e18506e89b61d",
+      "expected": "decode-login-response; run-id=present; error=empty"
+    },
+    {
+      "id": "wire-v1-login-token",
+      "path": "wire/v1/login-token.bin",
+      "layer": "wire-v1",
+      "length": 223,
+      "sha256": "f4e9afc2da334cef68db268c9c75c31326daae4809b369a522f965936456b145",
+      "expected": "decode-login; token-auth=valid"
+    },
+    {
+      "id": "wire-v1-new-visitor-conn-response",
+      "path": "wire/v1/new-visitor-conn-response.bin",
+      "layer": "wire-v1",
+      "length": 54,
+      "sha256": "e50fc643d1f7993adc6df1aed2adfd9ed87bd5b9d9b337556c640e175103ca25",
+      "expected": "decode-new-visitor-conn-response; proxy=present; error=empty"
+    },
+    {
+      "id": "wire-v1-new-visitor-stcp",
+      "path": "wire/v1/new-visitor-stcp.bin",
+      "layer": "wire-v1",
+      "length": 150,
+      "sha256": "e6f0e096d71dbc4d7505d0fa7e2d59d55f144da384a0cfa167a8a85760260133",
+      "expected": "decode-new-visitor; stcp-auth=valid"
+    },
+    {
+      "id": "wire-v1-start-work-conn",
+      "path": "wire/v1/start-work-conn.bin",
+      "layer": "wire-v1",
+      "length": 132,
+      "sha256": "e5174caeea67f4f64b9718b7f7bde48ac0d04c255906cb2a466c37bcaddfa9e8",
+      "expected": "decode-start-work-conn; proxy-addresses-ports=present; error=empty"
+    },
+    {
+      "id": "wire-v2-aes-256-gcm-client-bootstrap",
+      "path": "wire/v2/aes-256-gcm/client-bootstrap.bin",
+      "layer": "wire-v2-bootstrap",
+      "length": 467,
+      "sha256": "0092f8f836b5cc5d2c61cb295cd9e50ff073cc8f35798d2a9270ed0ec9c0d539",
+      "expected": "magic; client-hello; login; token-auth=valid"
+    },
+    {
+      "id": "wire-v2-aes-256-gcm-server-bootstrap",
+      "path": "wire/v2/aes-256-gcm/server-bootstrap.bin",
+      "layer": "wire-v2-bootstrap",
+      "length": 213,
+      "sha256": "ea3da78b91f40182ecb295166333d770e8435d9debd3459b1ffc1e9573989422",
+      "expected": "server-hello; login-response"
+    },
+    {
+      "id": "wire-v2-new-visitor-conn-response",
+      "path": "wire/v2/new-visitor-conn-response.bin",
+      "layer": "wire-v2",
+      "length": 55,
+      "sha256": "634ebc132fbe2885445c6eb4345ce31364956d3f4d47f6fa687272c70f4af1a7",
+      "expected": "decode-new-visitor-conn-response; proxy=present; error=empty"
+    },
+    {
+      "id": "wire-v2-new-visitor-stcp",
+      "path": "wire/v2/new-visitor-stcp.bin",
+      "layer": "wire-v2",
+      "length": 158,
+      "sha256": "554eaf28b9dc802aaff06679c1be974e91b23e20e99ab7a4b2305739eb18c56d",
+      "expected": "magic; decode-new-visitor; stcp-auth=valid"
+    },
+    {
+      "id": "wire-v2-start-work-conn",
+      "path": "wire/v2/start-work-conn.bin",
+      "layer": "wire-v2",
+      "length": 133,
+      "sha256": "2a5d856c4a48e9e8f3e07fb90f0196d970e00f0861988188ca4d5de797816d1a",
+      "expected": "decode-start-work-conn; proxy-addresses-ports=present; error=empty"
+    },
+    {
+      "id": "wire-v2-xchacha20-poly1305-client-bootstrap",
+      "path": "wire/v2/xchacha20-poly1305/client-bootstrap.bin",
+      "layer": "wire-v2-bootstrap",
+      "length": 467,
+      "sha256": "97ed152a0acd9e2f2cb9102e8042ae5a987d9ebbdc75364137a88c5ce2b236cb",
+      "expected": "magic; client-hello; login; token-auth=valid"
+    },
+    {
+      "id": "wire-v2-xchacha20-poly1305-server-bootstrap",
+      "path": "wire/v2/xchacha20-poly1305/server-bootstrap.bin",
+      "layer": "wire-v2-bootstrap",
+      "length": 220,
+      "sha256": "238fcd51196c7c0e14ec2b362bc28c837a2f199dbb6972286e53e596ffdd706e",
+      "expected": "server-hello; login-response"
+    },
+    {
+      "id": "yamux-client-to-server-trace",
+      "path": "yamux/client-to-server.trace.bin",
+      "layer": "yamux",
+      "length": 139,
+      "sha256": "3f391cbbb05d37fb2214b3fd8ca7a0333774eef3c6313de3d8e565eef8216582",
+      "expected": "recorded pinned Client/Server lifecycle; frames=9; odd client SYN; DATA; FIN; Ping API; GOAWAY"
+    },
+    {
+      "id": "yamux-flow-control-client-to-server-trace",
+      "path": "yamux/flow-control/client-to-server.trace.bin",
+      "layer": "yamux",
+      "length": 131108,
+      "sha256": "55f7d785b7b859b769b1c60872282832ddc507ca6405b966108085f210acefd6",
+      "expected": "recorded pinned Client/Server flow control; frames=3; payload consumes half the receive window"
+    },
+    {
+      "id": "yamux-flow-control-server-to-client-trace",
+      "path": "yamux/flow-control/server-to-client.trace.bin",
+      "layer": "yamux",
+      "length": 36,
+      "sha256": "88cd8f7d84219236fdacbc31c8de12f378a21cfeb25cd8892928917ad2ec2912",
+      "expected": "recorded pinned Client/Server flow control; frames=3; ACK; WINDOW_UPDATE; FIN"
+    },
+    {
+      "id": "yamux-reset-client-to-server-trace",
+      "path": "yamux/reset/client-to-server.trace.bin",
+      "layer": "yamux",
+      "length": 36,
+      "sha256": "225448774b9f7b2cd2ab7a8274094a1a31eb15e5c1ac320bc654a3f6ab678d53",
+      "expected": "recorded pinned Client/Server backlog reset; frames=3; two SYN attempts; surviving stream FIN"
+    },
+    {
+      "id": "yamux-reset-server-to-client-trace",
+      "path": "yamux/reset/server-to-client.trace.bin",
+      "layer": "yamux",
+      "length": 36,
+      "sha256": "9875d2a8c3d0c7f5188d42bdd5d685abb42b854435a348ae72200692627c28a6",
+      "expected": "recorded pinned Client/Server backlog reset; frames=3; RST error; surviving stream ACK and FIN"
+    },
+    {
+      "id": "yamux-server-to-client-trace",
+      "path": "yamux/server-to-client.trace.bin",
+      "layer": "yamux",
+      "length": 139,
+      "sha256": "3d54db17e5be69f85fbc47120bf6798bd0e99a28f6074f8a92149eb6a6f86d40",
+      "expected": "recorded pinned Client/Server lifecycle; frames=9; even server SYN; DATA; FIN; Ping API; GOAWAY"
+    }
+  ],
+  "chunkPlans": [
+    {
+      "id": "control-v2-aes-record-splits",
+      "source": "control/v2/aes-256-gcm/client-to-server.bin",
+      "sizes": [
+        1,
+        3,
+        2,
+        7
+      ],
+      "expected": "decrypt-success"
+    },
+    {
+      "id": "snappy-cfb-framed-splits",
+      "source": "compression/snappy/cfb/compressed.bin",
+      "sizes": [
+        1,
+        2,
+        3,
+        5,
+        8
+      ],
+      "expected": "decrypt-then-decompress-success"
+    },
+    {
+      "id": "wire-v1-bytewise",
+      "source": "wire/v1/login-token.bin",
+      "sizes": [
+        1
+      ],
+      "expected": "decode-success"
+    },
+    {
+      "id": "wire-v2-frame-splits",
+      "source": "wire/v2/aes-256-gcm/client-bootstrap.bin",
+      "sizes": [
+        1,
+        2,
+        3,
+        5,
+        8
+      ],
+      "expected": "decode-success"
+    },
+    {
+      "id": "yamux-flow-control-splits",
+      "source": "yamux/flow-control/client-to-server.trace.bin",
+      "sizes": [
+        1,
+        11,
+        4096,
+        3
+      ],
+      "expected": "parse-success"
+    },
+    {
+      "id": "yamux-lifecycle-splits",
+      "source": "yamux/client-to-server.trace.bin",
+      "sizes": [
+        1,
+        11,
+        2,
+        5
+      ],
+      "expected": "parse-success"
+    },
+    {
+      "id": "yamux-reset-splits",
+      "source": "yamux/reset/server-to-client.trace.bin",
+      "sizes": [
+        2,
+        1,
+        9,
+        4
+      ],
+      "expected": "parse-success"
+    }
+  ],
+  "mutations": [
+    {
+      "id": "control-v1-cfb-bit-flip",
+      "source": "control/v1/cfb/client-to-server.bin",
+      "operation": "xor-byte",
+      "offset": 209,
+      "mask": 1,
+      "expected": "accept-altered"
+    },
+    {
+      "id": "control-v2-aes-bit-flip",
+      "source": "control/v2/aes-256-gcm/client-to-server.bin",
+      "operation": "xor-byte",
+      "offset": 248,
+      "mask": 1,
+      "expected": "integrity-failure"
+    },
+    {
+      "id": "control-v2-aes-record-reorder",
+      "source": "control/v2/aes-256-gcm/client-to-server.bin",
+      "operation": "swap-aead-records",
+      "expected": "integrity-failure"
+    },
+    {
+      "id": "control-v2-aes-truncated",
+      "source": "control/v2/aes-256-gcm/client-to-server.bin",
+      "operation": "truncate-tail",
+      "count": 1,
+      "expected": "reject-truncated"
+    },
+    {
+      "id": "control-v2-aes-wrong-role",
+      "source": "control/v2/aes-256-gcm/server-to-client.bin",
+      "operation": "wrong-aead-role",
+      "expected": "integrity-failure"
+    },
+    {
+      "id": "control-v2-xchacha-bit-flip",
+      "source": "control/v2/xchacha20-poly1305/client-to-server.bin",
+      "operation": "xor-byte",
+      "offset": 260,
+      "mask": 1,
+      "expected": "integrity-failure"
+    },
+    {
+      "id": "control-v2-xchacha-record-reorder",
+      "source": "control/v2/xchacha20-poly1305/client-to-server.bin",
+      "operation": "swap-aead-records",
+      "expected": "integrity-failure"
+    },
+    {
+      "id": "control-v2-xchacha-wrong-role",
+      "source": "control/v2/xchacha20-poly1305/server-to-client.bin",
+      "operation": "wrong-aead-role",
+      "expected": "integrity-failure"
+    },
+    {
+      "id": "wire-v1-length-max-plus-one",
+      "source": "wire/v1/login-token.bin",
+      "operation": "set-int64-be",
+      "offset": 1,
+      "intValue": 10241,
+      "expected": "reject-over-limit"
+    },
+    {
+      "id": "wire-v1-negative-length",
+      "source": "wire/v1/login-token.bin",
+      "operation": "set-int64-be",
+      "offset": 1,
+      "intValue": -1,
+      "expected": "reject-negative-length"
+    },
+    {
+      "id": "wire-v1-truncated",
+      "source": "wire/v1/login-token.bin",
+      "operation": "truncate-tail",
+      "count": 1,
+      "expected": "reject-truncated"
+    },
+    {
+      "id": "wire-v1-unknown-type",
+      "source": "wire/v1/login-token.bin",
+      "operation": "set-byte",
+      "offset": 0,
+      "byteValue": 255,
+      "expected": "reject-unknown-type"
+    },
+    {
+      "id": "wire-v2-error-flags",
+      "source": "wire/v2/aes-256-gcm/client-bootstrap.bin",
+      "operation": "set-uint16-be",
+      "offset": 9,
+      "intValue": 1,
+      "expected": "reject-flags"
+    },
+    {
+      "id": "wire-v2-payload-max-plus-one",
+      "source": "wire/v2/aes-256-gcm/client-bootstrap.bin",
+      "operation": "set-uint32-be",
+      "offset": 11,
+      "intValue": 65537,
+      "expected": "reject-over-limit"
+    },
+    {
+      "id": "wire-v2-truncated",
+      "source": "wire/v2/aes-256-gcm/client-bootstrap.bin",
+      "operation": "truncate-tail",
+      "count": 1,
+      "expected": "reject-truncated"
+    },
+    {
+      "id": "wire-v2-unknown-message-type",
+      "source": "wire/v2/new-visitor-stcp.bin",
+      "operation": "set-uint16-be",
+      "offset": 15,
+      "intValue": 65535,
+      "expected": "reject-unknown-type"
+    },
+    {
+      "id": "yamux-data-bit-flip",
+      "source": "yamux/client-to-server.trace.bin",
+      "operation": "xor-byte",
+      "offset": 24,
+      "mask": 1,
+      "expected": "accept-altered"
+    },
+    {
+      "id": "yamux-unknown-type",
+      "source": "yamux/client-to-server.trace.bin",
+      "operation": "set-byte",
+      "offset": 1,
+      "byteValue": 255,
+      "expected": "reject-unknown-type"
+    }
+  ]
+}
