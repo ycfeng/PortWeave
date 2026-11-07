@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import dev.portweave.app.service.TunnelServiceClient
+import dev.portweave.app.ui.format.tunnelErrorPresentation
 import dev.portweave.core.data.repository.ConfigRepository
 import dev.portweave.core.model.EndpointSource
 import dev.portweave.core.model.DependencyGraph
@@ -23,6 +24,7 @@ import dev.portweave.core.security.CredentialKind
 import dev.portweave.core.security.CredentialRef
 import dev.portweave.core.security.CredentialStore
 import dev.portweave.tunnel.engine.ssh.DiscoveredHostKey
+import dev.portweave.tunnel.engine.ssh.SshBackendException
 import dev.portweave.tunnel.engine.ssh.SshHostKeyFingerprint
 import dev.portweave.tunnel.engine.ssh.SshTunnelBackend
 import java.util.UUID
@@ -271,6 +273,8 @@ class ConfigEditorViewModel(
                                 isDiscovering = false,
                                 error = if (failure.message == "dependency_start_failed") {
                                     "无法启动依赖配置，请检查上游映射状态"
+                                } else if (failure is SshBackendException) {
+                                    tunnelErrorPresentation(failure.tunnelError).let { "${it.title}。${it.suggestion}" }
                                 } else {
                                     "无法获取主机身份，请检查地址和网络"
                                 },

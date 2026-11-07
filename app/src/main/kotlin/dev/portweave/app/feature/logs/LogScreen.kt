@@ -255,7 +255,13 @@ private fun LogEventCard(event: TunnelEvent) {
             }
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(eventTitle(event.code), style = MaterialTheme.typography.titleMedium)
-                eventDescription(event.code)?.let { Text(it, color = PortWeaveThemeTokens.status.mutedText) }
+                eventDescription(event.code, event.messageKey)?.let { Text(it, color = PortWeaveThemeTokens.status.mutedText) }
+                Text(
+                    event.messageKey,
+                    color = PortWeaveThemeTokens.status.mutedText,
+                    fontFamily = PortWeaveThemeTokens.mono,
+                    style = MaterialTheme.typography.labelMedium,
+                )
             }
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(

@@ -5,6 +5,7 @@ import com.jcraft.jsch.Channel
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
+import com.jcraft.jsch.JSchAlgoNegoFailException
 import com.jcraft.jsch.Session
 import dev.portweave.core.model.EndpointSource
 import dev.portweave.core.model.SshAuthMethod
@@ -95,10 +96,9 @@ class SshTunnelBackend internal constructor(
                 exception
             }
             if (failure is CancellationException) throw failure
-            repository.result() ?: throw SshBackendException(
+            repository.result() ?: throw (failure?.let { mapFailure(it) } ?: SshBackendException(
                 TunnelError(TunnelErrorCode.SSH_FORWARD_FAILED, true, "ssh_host_key_discovery_failed"),
-                failure,
-            )
+            ))
         } finally {
             session.disconnectSafely()
         }
@@ -116,7 +116,7 @@ class SshTunnelBackend internal constructor(
                 // The String is short-lived and never logged; source bytes are wiped by the caller.
             }
             val session = sessionFactory.create(ssh.username, endpoint.host, endpoint.port)
-        session.setWorkPolicy(workPolicy)
+            session.setWorkPolicy(workPolicy)
             val startedAtNanos = System.nanoTime()
             try {
                 configureIdentityVerification(session, repository)
@@ -157,7 +157,7 @@ class SshTunnelBackend internal constructor(
                         TunnelError(TunnelErrorCode.SSH_HOST_KEY_MISMATCH, false, "ssh_host_key_mismatch"),
                     )
                 }
-                throw mapFailure(failure)
+                throw mapFailure(failure, ssh.authMethod)
             }
         }
 
@@ -211,16 +211,28 @@ class SshTunnelBackend internal constructor(
             TunnelError(TunnelErrorCode.CONFIG_INVALID, false, "ssh_dependency_not_resolved"),
         )
 
-    private fun mapFailure(failure: Exception): SshBackendException {
+    private fun mapFailure(failure: Exception, authMethod: SshAuthMethod? = null): SshBackendException {
         val causes = generateSequence<Throwable>(failure) { it.cause }.toList()
+        fun hasMessage(vararg markers: String) = causes.filterIsInstance<JSchException>().any { cause ->
+            markers.any { cause.message.orEmpty().contains(it, ignoreCase = true) }
+        }
         val error = when {
             causes.any { it is BindException } -> TunnelError(TunnelErrorCode.PORT_IN_USE, false, "local_port_in_use")
             causes.any { it is UnknownHostException } -> TunnelError(TunnelErrorCode.DNS_FAILED, true, "dns_failed")
             causes.any { it is SocketTimeoutException } -> TunnelError(TunnelErrorCode.CONNECT_TIMEOUT, true, "connect_timeout")
             causes.any { it is ConnectException } -> TunnelError(TunnelErrorCode.CONNECTION_REFUSED, true, "connection_refused")
-            failure is JSchException && listOf("Auth fail", "invalid privatekey", "decrypt", "passphrase")
-                .any { marker -> failure.message.orEmpty().contains(marker, true) } ->
-                TunnelError(TunnelErrorCode.SSH_AUTH_FAILED, false, "ssh_auth_failed")
+            causes.any { it is JSchAlgoNegoFailException } || hasMessage("Algorithm negotiation fail") ->
+                TunnelError(TunnelErrorCode.SSH_ALGORITHM_UNSUPPORTED, false, "ssh_algorithm_unsupported")
+            hasMessage("invalid privatekey", "invalid private key") ->
+                TunnelError(TunnelErrorCode.SSH_PRIVATE_KEY_INVALID, false, "ssh_private_key_invalid")
+            hasMessage("Incorrect passphrase provided") ->
+                TunnelError(TunnelErrorCode.SSH_PASSPHRASE_INVALID, false, "ssh_passphrase_invalid")
+            hasMessage("Auth fail", "Auth cancel", "USERAUTH fail") ->
+                TunnelError(TunnelErrorCode.SSH_AUTH_FAILED, false, when (authMethod) {
+                    SshAuthMethod.PRIVATE_KEY -> "ssh_public_key_rejected"
+                    SshAuthMethod.PASSWORD -> "ssh_password_rejected"
+                    null -> "ssh_auth_failed"
+                })
             failure.message.orEmpty().contains("PortForwardingL", true) ->
                 TunnelError(TunnelErrorCode.PORT_IN_USE, false, "local_port_in_use")
             else -> TunnelError(TunnelErrorCode.SSH_FORWARD_FAILED, true, "ssh_forward_failed")
@@ -304,8 +316,39 @@ private class JschSessionHandle(private val jsch: JSch, private val session: Ses
     override fun setServerAliveInterval(intervalMillis: Int) { session.serverAliveInterval = intervalMillis }
     override fun setWorkPolicy(policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy) { metricsTracker.policy = policy }
     override fun setHandshakeLatency(millis: Long) = metricsTracker.handshakeLatency(millis)
-    override fun addIdentity(name: String, privateKey: ByteArray, passphrase: ByteArray?) =
-        jsch.addIdentity(name, privateKey, null, passphrase)
+    override fun addIdentity(name: String, privateKey: ByteArray, passphrase: ByteArray?) {
+        try {
+            // Load without a passphrase so an encrypted key can be distinguished from a bad key.
+            jsch.addIdentity(name, privateKey, null, null)
+        } catch (failure: JSchException) {
+            throw SshBackendException(
+                TunnelError(TunnelErrorCode.SSH_PRIVATE_KEY_INVALID, false, "ssh_private_key_invalid"),
+                failure,
+            )
+        }
+        val identity = jsch.identityRepository.identities.single()
+        if (!identity.isEncrypted) return
+        if (passphrase == null || passphrase.isEmpty()) {
+            throw SshBackendException(
+                TunnelError(TunnelErrorCode.SSH_PASSPHRASE_REQUIRED, false, "ssh_passphrase_required"),
+            )
+        }
+        val phrase = passphrase.copyOf()
+        try {
+            if (!identity.setPassphrase(phrase)) {
+                throw SshBackendException(
+                    TunnelError(TunnelErrorCode.SSH_PASSPHRASE_INVALID, false, "ssh_passphrase_invalid"),
+                )
+            }
+        } catch (failure: JSchException) {
+            throw SshBackendException(
+                TunnelError(TunnelErrorCode.SSH_PASSPHRASE_INVALID, false, "ssh_passphrase_invalid"),
+                failure,
+            )
+        } finally {
+            phrase.fill(0)
+        }
+    }
     override fun setPassword(password: ByteArray) = session.setPassword(password)
     override fun connect(timeoutMillis: Int) = session.connect(timeoutMillis)
     override fun setPortForwardingL(
@@ -329,8 +372,12 @@ private class JschSessionHandle(private val jsch: JSch, private val session: Ses
     override fun disconnect() {
         forwarders.toList().forEach(LoopbackForwarder::close)
         forwarders.clear()
-        session.disconnect()
-        metricsTracker.close()
+        try {
+            session.disconnect()
+        } finally {
+            jsch.removeAllIdentity()
+            metricsTracker.close()
+        }
     }
 }
 

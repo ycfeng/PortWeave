@@ -74,6 +74,7 @@ import dev.portweave.app.ui.format.formatByteCount
 import dev.portweave.app.ui.format.eventDescription
 import dev.portweave.app.ui.format.eventLevelColor
 import dev.portweave.app.ui.format.eventTitle
+import dev.portweave.app.ui.format.tunnelErrorPresentation
 import dev.portweave.app.ui.qrcode.createQrCode
 import dev.portweave.app.ui.theme.PortWeaveThemeTokens
 import dev.portweave.core.data.repository.ConfigRepository
@@ -544,6 +545,13 @@ private fun HeroCard(config: TunnelConfig, snapshot: RuntimeSnapshot) {
                     style = MaterialTheme.typography.titleMedium,
                 )
             }
+            (snapshot.state as? TunnelState.Failed)?.error?.let { error ->
+                Text(
+                    tunnelErrorPresentation(error).suggestion,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
             if (config.description.isNotBlank()) {
                 Text(config.description, color = PortWeaveThemeTokens.status.mutedText)
             }
@@ -700,7 +708,7 @@ private fun EventRow(event: TunnelEvent) {
         )
         Column(modifier = Modifier.padding(start = 10.dp).weight(1f)) {
             Text(eventTitle(event.code), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            eventDescription(event.code)?.let {
+            eventDescription(event.code, event.messageKey)?.let {
                 Text(it, color = PortWeaveThemeTokens.status.mutedText, style = MaterialTheme.typography.bodyMedium)
             }
         }
@@ -723,7 +731,7 @@ private fun tunnelStatus(state: TunnelState): Pair<String, Color> = when (state)
     is TunnelState.Reconnecting -> "重连中 · ${state.attempt}" to PortWeaveThemeTokens.status.warning
     is TunnelState.Blocked -> "等待处理" to PortWeaveThemeTokens.status.warning
     TunnelState.Stopping -> "正在停止" to PortWeaveThemeTokens.status.warning
-    is TunnelState.Failed -> "运行失败" to MaterialTheme.colorScheme.error
+    is TunnelState.Failed -> tunnelErrorPresentation(state.error).title to MaterialTheme.colorScheme.error
 }
 
 private fun formatDuration(millis: Long): String {

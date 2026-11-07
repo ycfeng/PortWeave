@@ -21,7 +21,7 @@ fun eventTitle(code: String): String = when (code) {
     else -> "运行事件"
 }
 
-fun eventDescription(code: String): String? = when (code) {
+fun eventDescription(code: String, messageKey: String = ""): String? = when (code) {
     TunnelEventCode.START_REQUESTED -> "正在准备连接"
     TunnelEventCode.DEPENDENCY_RESOLVED -> "上游映射可以使用"
     TunnelEventCode.LISTENER_BOUND -> "本地端口已成功绑定"
@@ -30,7 +30,7 @@ fun eventDescription(code: String): String? = when (code) {
     TunnelEventCode.RETRY_SCHEDULED -> "系统将在稍后再次连接"
     TunnelEventCode.STOP_REQUESTED -> "正在安全关闭连接"
     TunnelEventCode.STOPPED -> "连接和本地端口已释放"
-    TunnelEventCode.FAILED -> "请查看技术信息或导出日志排查"
+    TunnelEventCode.FAILED -> sshFailureDescription(messageKey) ?: "请查看技术信息或导出日志排查"
     TunnelEventCode.PROCESS_RESTORED -> "应用已重新载入运行信息"
     else -> null
 }

@@ -10,6 +10,7 @@ import dev.portweave.core.model.TunnelKind
 import dev.portweave.core.model.TunnelSpec
 import dev.portweave.tunnel.engine.TunnelErrorCode
 import java.util.concurrent.CopyOnWriteArrayList
+import java.net.SocketTimeoutException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
@@ -106,15 +107,74 @@ class SshTunnelBackendTest {
         assertEquals(TunnelErrorCode.SSH_HOST_KEY_MISMATCH, failure.tunnelError.code)
         assertFalse("forward" in factory.sessions.single().operations)
     }
+
+    @Test
+    fun connectionFailuresKeepTheirSpecificReasonAndReleaseSession() {
+        val cases = listOf(
+            Triple(JSchException("invalid privatekey: sensitive input"), TunnelErrorCode.SSH_PRIVATE_KEY_INVALID, "ssh_private_key_invalid"),
+            Triple(JSchException("Incorrect passphrase provided."), TunnelErrorCode.SSH_PASSPHRASE_INVALID, "ssh_passphrase_invalid"),
+            Triple(JSchException("Algorithm negotiation fail: server proposal"), TunnelErrorCode.SSH_ALGORITHM_UNSUPPORTED, "ssh_algorithm_unsupported"),
+            Triple(JSchException("Auth fail for methods 'publickey'"), TunnelErrorCode.SSH_AUTH_FAILED, "ssh_public_key_rejected"),
+            Triple(JSchException("wrapped", JSchException("Auth fail")), TunnelErrorCode.SSH_AUTH_FAILED, "ssh_public_key_rejected"),
+            Triple(JSchException("wrapped", SocketTimeoutException()), TunnelErrorCode.CONNECT_TIMEOUT, "connect_timeout"),
+        )
+        cases.forEach { (exception, code, messageKey) ->
+            val hostKey = "failure-host".toByteArray()
+            val factory = RecordingFactory(hostKey, connectFailure = exception)
+            SshCredentials(
+                privateKey = "private-key".toByteArray(),
+                hostFingerprint = SshHostKeyFingerprint.sha256(hostKey).toByteArray(),
+            ).use { credentials ->
+                val failure = assertThrows(SshBackendException::class.java) {
+                    runBlocking { SshTunnelBackend(factory).start(config(SshAuthMethod.PRIVATE_KEY), credentials) }
+                }
+                assertEquals(code, failure.tunnelError.code)
+                assertEquals(messageKey, failure.tunnelError.messageKey)
+                assertEquals(code == TunnelErrorCode.CONNECT_TIMEOUT, failure.tunnelError.retryable)
+                assertFalse(failure.message.orEmpty().contains("sensitive input"))
+                assertTrue("disconnect" in factory.sessions.single().operations)
+                assertFalse("forward" in factory.sessions.single().operations)
+            }
+        }
+    }
+
+    @Test
+    fun passwordRejectionDoesNotClaimPrivateKeyFailure() {
+        val hostKey = "failure-host".toByteArray()
+        val factory = RecordingFactory(hostKey, connectFailure = JSchException("Auth fail"))
+        SshCredentials(
+            password = "wrong-password".toByteArray(),
+            hostFingerprint = SshHostKeyFingerprint.sha256(hostKey).toByteArray(),
+        ).use { credentials ->
+            val failure = assertThrows(SshBackendException::class.java) {
+                runBlocking { SshTunnelBackend(factory).start(config(), credentials) }
+            }
+            assertEquals("ssh_password_rejected", failure.tunnelError.messageKey)
+        }
+    }
+
+    @Test
+    fun discoveryReportsNegotiationFailureInsteadOfForwardFailure() {
+        val factory = RecordingFactory("host".toByteArray(), connectFailure = JSchException("Algorithm negotiation fail"))
+        val failure = assertThrows(SshBackendException::class.java) {
+            runBlocking { SshTunnelBackend(factory).discoverHostKey(config()) }
+        }
+        assertEquals(TunnelErrorCode.SSH_ALGORITHM_UNSUPPORTED, failure.tunnelError.code)
+        assertTrue("disconnect" in factory.sessions.single().operations)
+    }
 }
 
-private class RecordingFactory(private val hostKey: ByteArray) : SshSessionFactory {
+private class RecordingFactory(private val hostKey: ByteArray, private val connectFailure: Exception? = null) : SshSessionFactory {
     val sessions = CopyOnWriteArrayList<RecordingSession>()
     override fun create(username: String, host: String, port: Int): SshSessionHandle =
-        RecordingSession(host, hostKey).also(sessions::add)
+        RecordingSession(host, hostKey, connectFailure).also(sessions::add)
 }
 
-private class RecordingSession(private val host: String, private val hostKey: ByteArray) : SshSessionHandle {
+private class RecordingSession(
+    private val host: String,
+    private val hostKey: ByteArray,
+    private val connectFailure: Exception? = null,
+) : SshSessionHandle {
     val operations = mutableListOf<String>()
     private var repository: HostKeyRepository? = null
     var bindAddress: String? = null
@@ -131,6 +191,7 @@ private class RecordingSession(private val host: String, private val hostKey: By
     override fun setPassword(password: ByteArray) { operations += "password" }
     override fun connect(timeoutMillis: Int) {
         operations += "connect"
+        connectFailure?.let { throw it }
         if (repository?.check(host, hostKey) != HostKeyRepository.OK) throw JSchException("host rejected")
         isConnected = true
     }

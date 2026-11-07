@@ -64,6 +64,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.portweave.app.ui.component.TunnelStatusPill
 import dev.portweave.app.ui.component.adaptiveColumnCount
 import dev.portweave.app.ui.format.formatByteCount
+import dev.portweave.app.ui.format.tunnelErrorPresentation
 import dev.portweave.app.ui.component.displayName
 import dev.portweave.app.ui.theme.PortWeaveThemeTokens
 import dev.portweave.app.service.RuntimeStateStore
@@ -227,7 +228,7 @@ private fun ConfigCard(
         is TunnelState.Reconnecting -> "正在重连 · ${state.attempt}" to PortWeaveThemeTokens.status.warning
         is TunnelState.Blocked -> "等待处理" to PortWeaveThemeTokens.status.warning
         TunnelState.Stopping -> "正在停止" to PortWeaveThemeTokens.status.warning
-        is TunnelState.Failed -> "失败 · ${state.error.code.name}" to MaterialTheme.colorScheme.error
+        is TunnelState.Failed -> tunnelErrorPresentation(state.error).title to MaterialTheme.colorScheme.error
     }
     Card(
         modifier = Modifier
@@ -276,6 +277,13 @@ private fun ConfigCard(
                         Icon(Icons.Outlined.Public, contentDescription = "在浏览器中打开")
                     }
                 }
+            }
+            if (state is TunnelState.Failed) {
+                Text(
+                    tunnelErrorPresentation(state.error).suggestion,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
             }
             if (config.description.isNotBlank()) {
                 Text(config.description, color = PortWeaveThemeTokens.status.mutedText)

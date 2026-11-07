@@ -213,8 +213,78 @@ class SshTunnelIntegrationTest {
                 runBlocking { harness.backend.start(config, wrong) }
             }
             wrong.close()
-            assertEquals(TunnelErrorCode.SSH_AUTH_FAILED, failure.tunnelError.code)
+            assertEquals(TunnelErrorCode.SSH_PASSPHRASE_INVALID, failure.tunnelError.code)
+            assertEquals("ssh_passphrase_invalid", failure.tunnelError.messageKey)
             ServerSocket(config.localPort, 1, InetAddress.getByName("127.0.0.1")).use { }
+        }
+    }
+
+    @Test
+    fun encryptedPrivateKeyRequiresPassphraseBeforeAuthentication() = withHarness { harness ->
+        runBlocking {
+            val config = harness.config(SshAuthMethod.PRIVATE_KEY)
+            val pin = harness.backend.discoverHostKey(config).sha256Fingerprint
+            val encrypted = harness.encryptedPrivateKeyPem(harness.rsaKeyPair, "correct-passphrase")
+            listOf(null, byteArrayOf()).forEach { passphrase ->
+                SshCredentials(
+                    privateKey = encrypted.copyOf(),
+                    passphrase = passphrase,
+                    hostFingerprint = pin.toByteArray(),
+                ).use { credentials ->
+                    val failure = assertThrows(SshBackendException::class.java) {
+                        runBlocking { harness.backend.start(config, credentials) }
+                    }
+                    assertEquals(TunnelErrorCode.SSH_PASSPHRASE_REQUIRED, failure.tunnelError.code)
+                    assertEquals("ssh_passphrase_required", failure.tunnelError.messageKey)
+                }
+            }
+            encrypted.fill(0)
+            ServerSocket(config.localPort, 1, InetAddress.getByName("127.0.0.1")).use { }
+        }
+    }
+
+    @Test
+    fun invalidPrivateKeyIsNotReportedAsServerRejection() = withHarness { harness ->
+        runBlocking {
+            val config = harness.config(SshAuthMethod.PRIVATE_KEY)
+            val pin = harness.backend.discoverHostKey(config).sha256Fingerprint
+            SshCredentials(
+                privateKey = "not-a-private-key".toByteArray(),
+                hostFingerprint = pin.toByteArray(),
+            ).use { credentials ->
+                val failure = assertThrows(SshBackendException::class.java) {
+                    runBlocking { harness.backend.start(config, credentials) }
+                }
+                assertEquals(TunnelErrorCode.SSH_PRIVATE_KEY_INVALID, failure.tunnelError.code)
+                assertEquals("ssh_private_key_invalid", failure.tunnelError.messageKey)
+            }
+            ServerSocket(config.localPort, 1, InetAddress.getByName("127.0.0.1")).use { }
+        }
+    }
+
+    @Test
+    fun serverRejectionIdentifiesTheAuthenticationMethod() = withHarness { harness ->
+        runBlocking {
+            listOf(SshAuthMethod.PRIVATE_KEY, SshAuthMethod.PASSWORD).forEach { method ->
+                val base = harness.config(method)
+                val config = base.copy(spec = (base.spec as TunnelSpec.Ssh).copy(username = "wrong-user"))
+                val pin = harness.backend.discoverHostKey(config).sha256Fingerprint
+                SshCredentials(
+                    password = if (method == SshAuthMethod.PASSWORD) Password.toByteArray() else null,
+                    privateKey = if (method == SshAuthMethod.PRIVATE_KEY) harness.privateKeyPem(harness.rsaKeyPair) else null,
+                    hostFingerprint = pin.toByteArray(),
+                ).use { credentials ->
+                    val failure = assertThrows(SshBackendException::class.java) {
+                        runBlocking { harness.backend.start(config, credentials) }
+                    }
+                    assertEquals(TunnelErrorCode.SSH_AUTH_FAILED, failure.tunnelError.code)
+                    assertEquals(
+                        if (method == SshAuthMethod.PRIVATE_KEY) "ssh_public_key_rejected" else "ssh_password_rejected",
+                        failure.tunnelError.messageKey,
+                    )
+                }
+                ServerSocket(config.localPort, 1, InetAddress.getByName("127.0.0.1")).use { }
+            }
         }
     }
 
