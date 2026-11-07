@@ -1,5 +1,6 @@
 package dev.portweave.tunnel.engine
 
+import dev.portweave.core.data.settings.PowerProfile
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
@@ -40,7 +41,16 @@ class RuntimeWorkPolicy(val counters: RuntimeWorkCounters = RuntimeWorkCounters(
     val deviceIdle = MutableStateFlow(false)
     val visible = MutableStateFlow(false)
     val powerSave = MutableStateFlow(false)
+    val profile = MutableStateFlow(PowerProfile.BALANCED)
+    /** Identifies the settled default network (its handle), so learned keepalive intervals stay per network. */
+    val networkKey = MutableStateFlow<Long?>(null)
     private val networkChanges = MutableStateFlow(0L)
+
+    /** Keepalive cadence shared by every tunnel in the process. */
+    val heartbeat = HeartbeatCoordinator(this)
+
+    /** Under [PowerProfile.SAVER], how long an SSH tunnel must sit idle in the background before parking its session. */
+    @Volatile var standbyAfterIdleMillis: Long = 5 * 60_000L
 
     val mode: RuntimeMode get() = modeOf(visible.value, interactive.value, deviceIdle.value, powerSave.value)
 
@@ -66,8 +76,8 @@ class RuntimeWorkPolicy(val counters: RuntimeWorkCounters = RuntimeWorkCounters(
      */
     fun retryDelay(attempt: Int, nowMillis: Long, jitter: (Long) -> Long): Long? {
         val mode = mode
-        if (mode.dormantAfterFailures?.let { attempt >= it } == true) return null
-        val ceiling = min(mode.maximumRetryDelayMillis, 1_000L shl (attempt - 1).coerceIn(0, 20))
+        if (dormantAfterFailures(mode)?.let { attempt >= it } == true) return null
+        val ceiling = min(retryCeilingMillis(mode), 1_000L shl (attempt - 1).coerceIn(0, 20))
         if (mode == RuntimeMode.VISIBLE || ceiling < RetryAlignMillis) return jitter(ceiling).coerceIn(0, ceiling)
         return ceiling + Math.floorMod(-(nowMillis + ceiling), RetryAlignMillis)
     }
@@ -86,11 +96,23 @@ class RuntimeWorkPolicy(val counters: RuntimeWorkCounters = RuntimeWorkCounters(
         if (waitMillis <= 0) return
         withTimeoutOrNull(waitMillis) {
             merge(
-                modes.drop(1).filter { it.maximumRetryDelayMillis < waitMillis },
+                modes.drop(1).filter { retryCeilingMillis(it) < waitMillis },
                 networkChanges.drop(1),
             ).first()
         }
     }
+
+    /** [RuntimeMode.maximumRetryDelayMillis] as adjusted by [profile]: REALTIME treats a dark screen like BACKGROUND. */
+    fun retryCeilingMillis(mode: RuntimeMode): Long = effectiveMode(mode).maximumRetryDelayMillis
+
+    /** [RuntimeMode.dormantAfterFailures] as adjusted by [profile]: SAVER goes dormant after half as many failures. */
+    fun dormantAfterFailures(mode: RuntimeMode): Int? {
+        val base = effectiveMode(mode).dormantAfterFailures ?: return null
+        return if (profile.value == PowerProfile.SAVER) (base / 2).coerceAtLeast(1) else base
+    }
+
+    private fun effectiveMode(mode: RuntimeMode) =
+        if (profile.value == PowerProfile.REALTIME && mode == RuntimeMode.SCREEN_OFF) RuntimeMode.BACKGROUND else mode
 
     /**
      * [awaitRetry] for a transport that reconnects on its own (the STCP control connection). While visible it keeps

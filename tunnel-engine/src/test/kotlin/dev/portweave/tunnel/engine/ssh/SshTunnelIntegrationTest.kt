@@ -20,7 +20,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import dev.portweave.core.data.settings.PowerProfile
 import dev.portweave.tunnel.engine.RuntimeWorkPolicy
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -43,6 +45,39 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SshTunnelIntegrationTest {
+    @Test
+    fun saverParksAnIdleSessionAndTheNextClientReopensIt() = withHarness { harness ->
+        runBlocking {
+            val config = harness.config(SshAuthMethod.PASSWORD)
+            val pin = harness.backend.discoverHostKey(config).sha256Fingerprint
+            val policy = RuntimeWorkPolicy().apply {
+                profile.value = PowerProfile.SAVER
+                standbyAfterIdleMillis = 200L
+            }
+            var loads = 0
+            val handle = SshTunnelBackend(policy).startWithStandby(config) {
+                loads += 1
+                SshCredentials(Password.toByteArray(), hostFingerprint = pin.toByteArray())
+            }
+            try {
+                val lost = async(Dispatchers.Default) { handle.awaitConnectionLost() }
+                withTimeout(10_000) { handle.standby.first { it } }
+                withTimeout(10_000) { while (harness.activeSessionCount() > 0) delay(20) }
+                assertTrue(handle.isConnected)
+                assertTrue(lost.isActive)
+                // The listener stayed bound; a client brings the session back with freshly loaded credentials.
+                val payload = ByteArray(4 * 1024) { (it % 251).toByte() }
+                assertArrayEquals(payload, roundTrip(handle.localEndpoint.port, payload))
+                assertEquals(2, loads)
+                assertEquals(1L, policy.counters.snapshot()["sshStandbyResumes"])
+                assertTrue(lost.isActive)
+                lost.cancel()
+            } finally {
+                handle.stop()
+            }
+        }
+    }
+
     @Test
     fun serverSideDisconnectIsReportedImmediatelyWithoutPolling() = withHarness { harness ->
         runBlocking {
@@ -417,6 +452,8 @@ private class SshHarness : AutoCloseable {
     val backend = SshTunnelBackend()
 
     fun dropSessions() = ssh.activeSessions.forEach { it.close(true) }
+
+    fun activeSessionCount() = ssh.activeSessions.size
 
     fun config(authMethod: SshAuthMethod): TunnelConfig {
         val localPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }

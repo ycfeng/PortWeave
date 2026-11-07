@@ -17,7 +17,8 @@ sealed interface TunnelState {
     data object ResolvingDependencies : TunnelState
     data class WaitingDependency(val parentId: java.util.UUID) : TunnelState
     data class Starting(val stage: StartStage) : TunnelState
-    data class Ready(val sinceEpochMillis: Long) : TunnelState
+    /** [standby]: an idle tunnel parked its remote session; the local port still accepts and reconnects on demand. */
+    data class Ready(val sinceEpochMillis: Long, val standby: Boolean = false) : TunnelState
     /** [dormant]: no retry timer is scheduled; the next attempt waits for a network change or the app returning. */
     data class Reconnecting(val attempt: Int, val nextRetryAtEpochMillis: Long?, val dormant: Boolean = false) : TunnelState
     data object Stopping : TunnelState
@@ -84,6 +85,7 @@ data class BackendMetrics(
 )
 
 private val EmptyMetrics = MutableStateFlow(BackendMetrics())
+private val NotStandby: StateFlow<Boolean> = MutableStateFlow(false)
 
 interface BackendHandle {
     val kind: TunnelKind
@@ -92,6 +94,8 @@ interface BackendHandle {
     val capabilities: BackendCapabilities get() = BackendCapabilities()
     val metrics: StateFlow<BackendMetrics> get() = EmptyMetrics
     val failure: TunnelError? get() = null
+    /** True while the tunnel is parked in standby; see [TunnelState.Ready.standby]. */
+    val standby: StateFlow<Boolean> get() = NotStandby
     suspend fun awaitConnectionLost()
     suspend fun stop()
 }

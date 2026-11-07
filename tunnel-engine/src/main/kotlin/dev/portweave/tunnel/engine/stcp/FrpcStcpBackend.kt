@@ -3,6 +3,7 @@ package dev.portweave.tunnel.engine.stcp
 import dev.portweave.tunnel.engine.RuntimeWorkPolicy
 import dev.portweave.tunnel.engine.RecoveringBackendHandle
 import dev.portweave.tunnel.engine.BackendAvailability
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcKeepAliveScheduler
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorNetworkChangeAware
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorStateObservable
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorState
@@ -34,6 +35,22 @@ import kotlinx.coroutines.flow.asStateFlow
 
 fun interface FrpcStcpVisitorClientFactory {
     fun create(): FrpcStcpVisitorClient
+}
+
+/** Routes one STCP client's yamux keepalives through the shared heartbeat, so they line up with SSH beats. */
+class CoordinatedKeepAliveScheduler(private val policy: RuntimeWorkPolicy) : FrpcKeepAliveScheduler {
+    @Volatile private var lastIntervalMillis = 0L
+
+    override suspend fun awaitNextKeepAlive(defaultIntervalMillis: Long) {
+        val interval = policy.heartbeat.intervalMillis(defaultIntervalMillis)
+        lastIntervalMillis = interval
+        policy.heartbeat.awaitBeat(interval)
+    }
+
+    override fun onKeepAliveResult(answered: Boolean) {
+        policy.counters.increment(if (answered) "stcpKeepAlivesAnswered" else "stcpKeepAliveTimeouts")
+        policy.heartbeat.onKeepAliveResult(answered, lastIntervalMillis)
+    }
 }
 
 class FrpcStcpBackend(

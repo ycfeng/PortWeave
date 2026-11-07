@@ -1,5 +1,7 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux
 
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcKeepAliveScheduler
+
 internal data class YamuxConfig(
     val receiveWindowSize: Long = YamuxProtocol.INITIAL_STREAM_WINDOW,
     val maxDataFrameSize: Int = receiveWindowSize.toInt(),
@@ -19,6 +21,8 @@ internal data class YamuxConfig(
     val keepAliveIntervalMillis: Long = 30_000L,
     val keepAliveTimeoutMillis: Long = 10_000L,
     val initialLocalStreamId: Long = 1L,
+    /** Replaces the fixed keepalive interval when set; null keeps [keepAliveIntervalMillis]. */
+    val keepAliveScheduler: FrpcKeepAliveScheduler? = null,
 ) {
     init {
         require(receiveWindowSize in YamuxProtocol.INITIAL_STREAM_WINDOW..Int.MAX_VALUE.toLong())

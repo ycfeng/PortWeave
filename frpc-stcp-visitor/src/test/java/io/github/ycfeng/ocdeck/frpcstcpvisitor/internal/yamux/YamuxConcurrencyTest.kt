@@ -1734,6 +1734,49 @@ class YamuxConcurrencyTest {
     }
 
     @Test
+    fun keepAliveSchedulerDecidesWhenToPingAndHearsTheTimeout() = runTest {
+        val transport = YamuxTestTransport()
+        val waits = mutableListOf<Long>()
+        val results = mutableListOf<Boolean>()
+        val release = CompletableDeferred<Unit>()
+        val scheduler = object : io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcKeepAliveScheduler {
+            override suspend fun awaitNextKeepAlive(defaultIntervalMillis: Long) {
+                waits += defaultIntervalMillis
+                release.await()
+            }
+
+            override fun onKeepAliveResult(answered: Boolean) {
+                results += answered
+            }
+        }
+        val session = createYamuxClientSession(
+            transport,
+            backgroundScope,
+            testConfig(
+                keepAliveEnabled = true,
+                keepAliveIntervalMillis = 1_000L,
+                keepAliveTimeoutMillis = 500L,
+            ).copy(keepAliveScheduler = scheduler),
+        )
+
+        advanceTimeBy(60_000L)
+        runCurrent()
+        // The host owns the timing: the built-in interval passed by, yet no ping went out.
+        assertEquals(listOf(1_000L), waits)
+        assertEquals(0, transport.writtenBytes().size)
+
+        release.complete(Unit)
+        runCurrent()
+        transport.awaitWrittenSize(YamuxProtocol.HEADER_SIZE)
+        advanceTimeBy(500L)
+        runCurrent()
+        val failure = suspendFailureOf { session.awaitTermination() }
+
+        assertTrue(failure is YamuxTimeoutFailure)
+        assertEquals(listOf(false), results)
+    }
+
+    @Test
     fun sendWindowOverflowTerminatesWithAProtocolFailure() = runTest {
         val transport = YamuxTestTransport()
         val session = createYamuxClientSession(transport, backgroundScope, testConfig())

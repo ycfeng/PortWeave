@@ -345,6 +345,24 @@ class SshRuntimeRunnerTest {
         visible.stopAll()
     }
 
+    @Test fun parkedStandbyShowsAsReadyStandbyWithoutTouchingReadiness() = runTest {
+        val config = runtimeConfig()
+        val backend = ControlledBackend()
+        val states = RuntimeStateStore()
+        val runner = SshRuntimeRunner(null, backgroundScope, FakeConfigRepository(config),
+            FakeCredentialStore(), backend, states, networkAvailable = { true })
+        assertTrue(runner.startAndAwait(config.id)); runCurrent()
+        val since = (states.states.value.getValue(config.id) as TunnelState.Ready).sinceEpochMillis
+        backend.handles.getValue(config.id).standby.value = true
+        runCurrent()
+        assertEquals(TunnelState.Ready(since, standby = true), states.states.value[config.id])
+        backend.handles.getValue(config.id).standby.value = false
+        runCurrent()
+        assertEquals(TunnelState.Ready(since), states.states.value[config.id])
+        assertEquals(1, backend.starts.size)
+        runner.stopAll()
+    }
+
     @Test fun stopDuringRecoveryDelayNeverRestartsTunnel() = runTest {
         val config = runtimeConfig()
         val backend = ControlledBackend()
@@ -670,6 +688,7 @@ private class ControlledHandle(port: Int, private val reconnectable: Boolean = f
     val lost = CompletableDeferred<Unit>()
     var stopped = false
     var transportReconnects = 0
+    override val standby = MutableStateFlow(false)
     override suspend fun reconnectTransport(): Boolean {
         if (!reconnectable) return false
         transportReconnects += 1

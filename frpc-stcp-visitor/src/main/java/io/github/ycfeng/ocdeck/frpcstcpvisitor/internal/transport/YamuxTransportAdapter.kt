@@ -1,5 +1,7 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport
 
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcKeepAliveScheduler
+
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxClientSession
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxPhysicalTransport
@@ -25,13 +27,14 @@ internal const val FRP_YAMUX_KEEPALIVE_INTERVAL_MILLIS = 30_000L
 internal const val FRP_YAMUX_MAX_STREAMS = 33
 internal const val FRP_YAMUX_MAX_PENDING_OPENS = 33
 
-internal fun productionFrpYamuxConfig(): YamuxConfig = YamuxConfig(
+internal fun productionFrpYamuxConfig(keepAliveScheduler: FrpcKeepAliveScheduler? = null): YamuxConfig = YamuxConfig(
     receiveWindowSize = FRP_YAMUX_RECEIVE_WINDOW_SIZE,
     maxDataFrameSize = FRP_YAMUX_RECEIVE_WINDOW_SIZE.toInt(),
     maxStreams = FRP_YAMUX_MAX_STREAMS,
     maxPendingOpens = FRP_YAMUX_MAX_PENDING_OPENS,
     keepAliveEnabled = true,
     keepAliveIntervalMillis = FRP_YAMUX_KEEPALIVE_INTERVAL_MILLIS,
+    keepAliveScheduler = keepAliveScheduler,
 )
 
 internal class TcpTlsYamuxConnector(

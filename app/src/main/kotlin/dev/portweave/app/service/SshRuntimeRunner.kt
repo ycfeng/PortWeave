@@ -96,6 +96,10 @@ class SshRuntimeRunner(
     @Volatile private var settledNetwork: NetworkStatus? = networkStatus?.value
     @Volatile private var networkLimited = false
 
+    init {
+        settledNetwork?.let { workPolicy.networkKey.value = it.networkHandle }
+    }
+
     fun start(configId: UUID) {
         scope.launch { startAndAwait(configId) }
     }
@@ -258,6 +262,7 @@ class SshRuntimeRunner(
         }
         networkLimited = false
         settledNetwork = status
+        workPolicy.networkKey.value = status.networkHandle
         cancelOperations(operationIds() + recoveryJobs.keys.toSet())
         val active = orchestrator.activeIds()
         val affected = active + desiredRoots()
@@ -354,20 +359,8 @@ class SshRuntimeRunner(
     }
 
     private suspend fun startBackend(config: TunnelConfig): BackendHandle = when (val spec = config.spec) {
-        is TunnelSpec.Ssh -> {
-            val refs = spec.credentials
-            val credentials = SshCredentials(
-                password = if (spec.authMethod == SshAuthMethod.PASSWORD) {
-                    credentialStore.read(refs.password ?: throw CredentialUnavailableException())
-                } else null,
-                privateKey = if (spec.authMethod == SshAuthMethod.PRIVATE_KEY) {
-                    credentialStore.read(refs.privateKey ?: throw CredentialUnavailableException())
-                } else null,
-                passphrase = refs.passphrase?.let { credentialStore.read(it) },
-                hostFingerprint = credentialStore.read(refs.hostFingerprint ?: throw CredentialUnavailableException()),
-            )
-            try { backend.start(config, credentials) } finally { credentials.close() }
-        }
+        // Credentials are read again (and wiped again) if a parked standby session has to reopen.
+        is TunnelSpec.Ssh -> backend.startWithStandby(config) { sshCredentials(spec) }
         is TunnelSpec.Stcp -> {
             val implementation = stcpBackend ?: throw StcpBackendException(
                 TunnelError(TunnelErrorCode.CONFIG_INVALID, false, "stcp_backend_unavailable"),
@@ -383,6 +376,26 @@ class SshRuntimeRunner(
                 throw failure
             }
             try { implementation.start(config, credentials) } finally { credentials.close() }
+        }
+    }
+
+    private suspend fun sshCredentials(spec: TunnelSpec.Ssh): SshCredentials {
+        val refs = spec.credentials
+        val password = if (spec.authMethod == SshAuthMethod.PASSWORD) {
+            credentialStore.read(refs.password ?: throw CredentialUnavailableException())
+        } else null
+        return try {
+            SshCredentials(
+                password = password,
+                privateKey = if (spec.authMethod == SshAuthMethod.PRIVATE_KEY) {
+                    credentialStore.read(refs.privateKey ?: throw CredentialUnavailableException())
+                } else null,
+                passphrase = refs.passphrase?.let { credentialStore.read(it) },
+                hostFingerprint = credentialStore.read(refs.hostFingerprint ?: throw CredentialUnavailableException()),
+            )
+        } catch (failure: Exception) {
+            password?.fill(0)
+            throw failure
         }
     }
 
@@ -409,6 +422,14 @@ class SshRuntimeRunner(
                 handle.metrics.collectLatest { metrics ->
                     if (stateStore.runtime.value[configId]?.generation == generation) {
                         stateStore.updateMetrics(configId, handle.capabilities, metrics, generation)
+                    }
+                }
+            }
+            val standbyJob = launch {
+                handle.standby.collect { parked ->
+                    val ready = stateStore.states.value[configId] as? TunnelState.Ready ?: return@collect
+                    if (ready.standby != parked) {
+                        stateStore.updateIfGeneration(configId, generation, ready.copy(standby = parked))
                     }
                 }
             }
@@ -468,6 +489,7 @@ class SshRuntimeRunner(
                 }
             } finally {
                 metricsJob.cancel()
+                standbyJob.cancel()
                 availabilityJob?.cancel()
             }
         }

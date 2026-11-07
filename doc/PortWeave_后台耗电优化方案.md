@@ -360,6 +360,21 @@ override suspend fun awaitConnectionLost() {
 
 4. **服务端也要配合**：服务端发出的心跳同样会唤醒手机，见 §5。
 
+**实现说明（阶段三，已完成）**：
+
+- **`HeartbeatCoordinator`**（`tunnel-engine/.../HeartbeatCoordinator.kt`）统一决定所有隧道的保活时机：
+  - 前台，或选了“实时”档：使用配置值。
+  - 其他情况：沿阶梯 60、90、120、180、240s 自适应。按网络（`networkKey`，即 networkHandle）分别记忆，只保存在内存里，最多记 8 个网络。
+  - 后台空闲时，连续 4 次保活得到响应就升一档（省电档从 90s 起步，2 次就升）。空闲时一次保活没有响应，就把该网络的上限定为“失败档位减一”，以后不再试探这一档。
+  - 永远不会短于用户配置的间隔。
+- **对齐**：每次保活都对齐到“间隔整数倍”的墙钟时刻，所以多条 SSH 和 STCP 隧道会同时发出保活。界面变为可见时立即补发一次，相当于打开应用时做一次存活检查。
+- **SSH**：新增 `SshHeartbeat`。
+  - 由协调器驱动 `Session.sendKeepAliveMsg()`。socket factory 在读流上计数，用来判断有没有收到响应：响应超时取配置值，限制在 5–30s。超时就断开会话，交给 runner 恢复。
+  - JSch 自带的保活改作兜底：`serverAliveInterval` 设为“间隔 + 响应超时 + 5s”，只有在驱动停止工作时才会触发。已核对 2.28.3 源码：已连接时调用 `setServerAliveInterval` 会立即 `setSoTimeout`，从下一次读开始生效。
+  - 没有把 `ServerAliveCountMax` 改为 3。响应超时由驱动自己判定，JSch 的计数只作兜底。
+- **yamux**：库里新增可选接口 `FrpcKeepAliveScheduler`，通过 `KotlinFrpcStcpVisitorClient(context, gate, scheduler)` 注入，并经 `YamuxConfig.keepAliveScheduler` 替换 `runKeepAlive()` 里的固定 `delay`。ping 的结果会回报给协调器。不注入时，默认行为与原来一致。
+- **设置项**：方案里的“后台保活策略：自适应 / 跟随配置值”合并进 §4.8 的“省电档位”。“实时”档就是跟随配置值。
+
 ---
 
 ### 4.5 【P1】前台通知刷新节流
@@ -445,6 +460,19 @@ notificationJob = scope.launch(Dispatchers.Main.immediate) {
   | 均衡（默认） | 自适应 | §4.2 默认参数 | 关 |
   | 省电 | 自适应，上探更激进 | 更早进入休眠 | 开（5 分钟） |
 
+**实现说明（阶段三，已完成 SSH 部分）**：
+
+- 设置 → 后台运行 → 省电档位：实时 / 均衡（默认）/ 省电，保存在 DataStore（`power_profile`）。服务启动后同步到 `RuntimeWorkPolicy.profile`。
+  - 实时：熄屏时按 `BACKGROUND` 档退避，保活跟随配置值。
+  - 省电：休眠阈值减半；保活从 90s 起步，2 次成功就升一档；SSH 空闲断开。
+- **SSH 待机**：`JschSessionHandle` 改成可以替换会话。它记录首个会话的配置（主机密钥库、算法配置、保活、超时、认证方式），不保存任何秘密。
+  - 进入待机的条件：省电档、界面不可见、没有活动连接，持续 5 分钟。进入后断开 SSH 会话，并清除 JSch 中的身份。本地端口继续监听，也不再有保活。
+  - 有客户端连上来时，在该连接的转发线程里重新读取凭据，用 runner 传入的加载函数从加密存储读取，用完即清零，然后重放配置、建立新会话，再转发这条连接。
+  - 重连失败时，按“连接丢失”交给 runner，由正常启动流程映射错误，并套用 §4.2 的档位和休眠。
+  - 状态显示为 `Ready(standby = true)`，首页显示“已就绪 · 待机”。
+  - 没有单独做依赖树例外：下游隧道的长连接本身就是活动连接，所以上游不会进入待机。
+- STCP 部分仍按原计划推迟，需要库支持按需建立控制连接。
+
 ---
 
 ### 4.9 【P2】厂商白名单引导（兜底）
@@ -463,6 +491,14 @@ notificationJob = scope.launch(Dispatchers.Main.immediate) {
    | MagicOS / HarmonyOS / EMUI | 应用启动管理 → 手动管理 → 允许后台活动 |
    | 通用 | 在多任务界面锁定应用卡片 |
 
+**实现说明（阶段三，已完成）**：
+
+- 见 `app/.../feature/background/BackgroundRestriction.kt`。
+- 只看上一次进程的退出原因。当原因是 `REASON_OTHER`、`REASON_SIGNALED`、`REASON_EXCESSIVE_RESOURCE_USAGE` 或 `REASON_LOW_MEMORY`，而且当时存在 desired roots 时，下次打开应用会弹窗提示一次。`REASON_LOW_MEMORY` 是在方案基础上加的，因为不少 ROM 会把后台清理报告成这个原因。
+- 已提示过的退出时间戳记在 DataStore（`acknowledged_exit_timestamp`），同一次退出不会重复提示。
+- 设置页的“后台运行”部分新增了厂商设置说明，以及“打开应用设置”通用入口（`ACTION_APPLICATION_DETAILS_SETTINGS`），没有硬编码任何厂商组件名。
+- Android 11 以下系统没有这个 API，不提示。
+
 ---
 
 ### 4.10 不建议的做法
@@ -478,6 +514,8 @@ notificationJob = scope.launch(Dispatchers.Main.immediate) {
 ---
 
 ## 5. 服务端配置建议（写入用户帮助文档）
+
+> 已写入用户文档《`doc/PortWeave_后台运行与服务端配置指南.md`》，内容包括省电档位说明、服务端配置、厂商设置和诊断计数器。
 
 服务端主动发出的心跳也会唤醒手机的射频和 CPU，客户端单方面降频不够。
 
@@ -504,7 +542,10 @@ notificationJob = scope.launch(Dispatchers.Main.immediate) {
 | `stcpTransportReconnects` | **新增（阶段二）**：换网时 STCP 就地重连传输层的次数 |
 | `networkValidationLost` | **新增（阶段二）**：同一网络失去 VALIDATED、但没有拆隧道的次数 |
 | `suppressedEvents` | **新增（阶段二）**：后台被抑制、没有写库的日志条数 |
-| `keepAliveSent` | 计划（阶段三）：主动发出的保活次数 |
+| `sshKeepAlivesSent`、`sshKeepAliveTimeouts` | **新增（阶段三）**：SSH 驱动发出的保活次数、未收到响应的次数 |
+| `stcpKeepAlivesAnswered`、`stcpKeepAliveTimeouts` | **新增（阶段三）**：yamux 保活得到响应、超时的次数 |
+| `heartbeatPromotions`、`heartbeatDemotions` | **新增（阶段三）**：自适应保活升档、降档的次数 |
+| `sshStandbyEntries`、`sshStandbyResumes` | **新增（阶段三）**：SSH 进入待机、按需重连的次数 |
 
 ### 6.2 系统工具
 
@@ -547,7 +588,7 @@ S7 是最终验收标准。S1–S6 是可以在 CI 或本地重复执行的代�
 |---|---|---|---|
 | 阶段一：止血（**代码已完成，编译与单测通过，待真机验证**） | §4.1-A 检测频率改为按可见性<br>§4.5 熄屏时不刷新通知，后台最短间隔 10s，加 `setOnlyAlertOnce`<br>§4.2-4 稳定判定改为 5 分钟 | 小 | `tunnel-engine`、`app` |
 | 阶段二：主体（**代码已完成，编译与单测通过，待真机验证**） | §4.0 运行档位<br>§4.1-B 事件驱动的断线检测<br>§4.2 分档重连与休眠<br>§4.3 网络去抖<br>§4.6 日志与指标降频<br>§4.7 端口重试上限 | 中 | `tunnel-engine`、`app`、`frpc-stcp-visitor`（只加注入点） |
-| 阶段三：深度优化 | §4.4 自适应心跳和 `HeartbeatCoordinator`<br>§4.8 空闲断开<br>§4.9 白名单引导<br>§5 帮助文档 | 大 | 全部模块 |
+| 阶段三：深度优化（**代码已完成，编译与单测通过，待真机验证**；§4.8 的 STCP 部分推迟） | §4.4 自适应心跳和 `HeartbeatCoordinator`<br>§4.8 空闲断开<br>§4.9 白名单引导<br>§5 帮助文档 | 大 | 全部模块 |
 
 每个阶段必须通过的回归测试：
 

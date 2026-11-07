@@ -33,7 +33,21 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import dev.portweave.core.data.settings.PowerProfile
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -74,6 +88,15 @@ class SshBackendException(
 interface SshBackend {
     suspend fun discoverHostKey(config: TunnelConfig): DiscoveredHostKey
     suspend fun start(config: TunnelConfig, credentials: SshCredentials): BackendHandle
+
+    /**
+     * Like [start], but [credentials] may be loaded again later: an idle tunnel can then park its session (standby)
+     * and reopen it when a client connects. Backends without standby just start once.
+     */
+    suspend fun startWithStandby(config: TunnelConfig, credentials: suspend () -> SshCredentials): BackendHandle {
+        val loaded = credentials()
+        return try { start(config, loaded) } finally { loaded.close() }
+    }
 }
 
 class SshTunnelBackend internal constructor(
@@ -104,6 +127,16 @@ class SshTunnelBackend internal constructor(
         } finally {
             session.disconnectSafely()
         }
+    }
+
+    override suspend fun startWithStandby(
+        config: TunnelConfig,
+        credentials: suspend () -> SshCredentials,
+    ): BackendHandle {
+        val loaded = credentials()
+        val handle = try { start(config, loaded) } finally { loaded.close() }
+        handle.enableStandby(credentials)
+        return handle
     }
 
     override suspend fun start(config: TunnelConfig, credentials: SshCredentials): SshBackendHandle =
@@ -145,6 +178,7 @@ class SshTunnelBackend internal constructor(
                     ssh.remoteTargetPort,
                 )
                 session.setHandshakeLatency((System.nanoTime() - startedAtNanos) / 1_000_000L)
+                session.startHeartbeat(workPolicy, secondsToMillis(ssh.keepAliveSeconds).toLong())
                 SshBackendHandle(session, boundPort, workPolicy)
             } catch (cancellation: CancellationException) {
                 session.disconnectSafely()
@@ -264,6 +298,9 @@ class SshBackendHandle internal constructor(
     override val isConnected: Boolean get() = session.isConnected
     override val capabilities: BackendCapabilities get() = session.capabilities.copy(handshakeLatency = true)
     override val metrics: StateFlow<BackendMetrics> get() = session.metrics
+    override val standby: StateFlow<Boolean> get() = session.standbyState
+
+    internal fun enableStandby(credentials: suspend () -> SshCredentials) = session.enableStandby(workPolicy, credentials)
 
     override suspend fun awaitConnectionLost() {
         val lost = session.connectionLost
@@ -272,6 +309,9 @@ class SshBackendHandle internal constructor(
             workPolicy.counters.increment("sshStateChecks")
             if (lost == null) {
                 workPolicy.awaitNextCheck(metrics)
+            } else if (session.standbyState.value) {
+                // Parked: there is no session that could miss a signal, so no safety timer either.
+                merge(flow { lost.await(); emit(Unit) }, session.standbyState.filter { !it }.map { }).first()
             } else {
                 // Event-driven: the socket reports its own close. The rare timeout only guards a missed signal.
                 withTimeoutOrNull(SafetyCheckMillis) { lost.await() }
@@ -296,11 +336,19 @@ internal interface SshSessionHandle {
     val metrics: StateFlow<BackendMetrics> get() = kotlinx.coroutines.flow.MutableStateFlow(BackendMetrics())
     /** Completes when the established connection ends; null makes [SshBackendHandle] fall back to polling. */
     val connectionLost: Deferred<Unit>? get() = null
+    /** True while an idle session is parked; the local listener stays bound and reopens it on demand. */
+    val standbyState: StateFlow<Boolean> get() = NeverStandby
+    fun enableStandby(
+        policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy,
+        credentials: suspend () -> SshCredentials,
+    ) = Unit
     fun setHostKeyRepository(repository: HostKeyRepository)
     fun setConfig(key: String, value: String)
     fun setServerAliveInterval(intervalMillis: Int)
     fun setWorkPolicy(policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy) = Unit
     fun setHandshakeLatency(millis: Long) = Unit
+    /** Hands keepalive timing to the shared [dev.portweave.tunnel.engine.HeartbeatCoordinator]; no-op when unsupported. */
+    fun startHeartbeat(policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy, configuredMillis: Long) = Unit
     fun addIdentity(name: String, privateKey: ByteArray, passphrase: ByteArray?)
     fun setPassword(password: ByteArray)
     fun connect(timeoutMillis: Int)
@@ -311,28 +359,174 @@ internal interface SshSessionHandle {
 private object JschSessionFactory : SshSessionFactory {
     override fun create(username: String, host: String, port: Int): SshSessionHandle {
         ensureBouncyCastle()
-        val jsch = JSch()
-        return JschSessionHandle(jsch, jsch.getSession(username, host, port))
+        return JschSessionHandle(JSch(), username, host, port)
     }
 }
 
-private class JschSessionHandle(private val jsch: JSch, private val session: Session) : SshSessionHandle {
+/**
+ * One SSH tunnel's connection to its server. It records how its first session was set up, so that in standby it can
+ * drop the session while idle and replay that setup on a fresh session (with freshly loaded credentials) when the
+ * next client connects. The local listener and metrics belong to the handle and survive such a swap.
+ */
+private class JschSessionHandle(
+    private val jsch: JSch,
+    private val username: String,
+    private val host: String,
+    private val port: Int,
+) : SshSessionHandle {
+    private inner class Live(val session: Session) {
+        val socketFactory = DisconnectAwareSocketFactory().also(session::setSocketFactory)
+        @Volatile var retired = false
+        @Volatile var heartbeat: Job? = null
+    }
+
     private val forwarders = ConcurrentHashMap.newKeySet<LoopbackForwarder>()
     private val metricsTracker = SshMetricsTracker()
-    private val socketFactory = DisconnectAwareSocketFactory().also(session::setSocketFactory)
-    override val isConnected: Boolean get() = session.isConnected
-    override val connectionLost: Deferred<Unit> get() = socketFactory.connectionLost
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lost = CompletableDeferred<Unit>()
+    private val mutableStandby = MutableStateFlow(false)
+    private val swapLock = Any()
+    @Volatile private var live = Live(jsch.getSession(username, host, port))
+
+    // The recorded setup, replayed when a session is reopened after standby. No secrets are kept here.
+    private val configs = LinkedHashMap<String, String>()
+    private var hostKeyRepository: HostKeyRepository? = null
+    private var aliveIntervalMillis = 0
+    private var connectTimeoutMillis = 0
+    private var identityName: String? = null
+    private var policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy? = null
+    private var keepAliveMillis = 0L
+    @Volatile private var reopenCredentials: (suspend () -> SshCredentials)? = null
+
+    override val isConnected: Boolean get() = !lost.isCompleted && (mutableStandby.value || live.session.isConnected)
+    override val connectionLost: Deferred<Unit> get() = lost
+    override val standbyState: StateFlow<Boolean> = mutableStandby
     override val capabilities = BackendCapabilities(byteCounters = true, activeConnectionCount = true)
     override val metrics: StateFlow<BackendMetrics> = metricsTracker.metrics
     override fun setHostKeyRepository(repository: HostKeyRepository) {
+        hostKeyRepository = repository
         jsch.setHostKeyRepository(repository)
-        session.setHostKeyRepository(repository)
+        live.session.setHostKeyRepository(repository)
     }
-    override fun setConfig(key: String, value: String) = session.setConfig(key, value)
-    override fun setServerAliveInterval(intervalMillis: Int) { session.serverAliveInterval = intervalMillis }
-    override fun setWorkPolicy(policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy) { metricsTracker.policy = policy }
+    override fun setConfig(key: String, value: String) {
+        configs[key] = value
+        live.session.setConfig(key, value)
+    }
+    override fun setServerAliveInterval(intervalMillis: Int) {
+        aliveIntervalMillis = intervalMillis
+        live.session.serverAliveInterval = intervalMillis
+    }
+    override fun setWorkPolicy(policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy) {
+        this.policy = policy
+        metricsTracker.policy = policy
+    }
     override fun setHandshakeLatency(millis: Long) = metricsTracker.handshakeLatency(millis)
+    override fun startHeartbeat(policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy, configuredMillis: Long) {
+        this.policy = policy
+        keepAliveMillis = configuredMillis
+        startHeartbeat(live)
+    }
+
+    private fun startHeartbeat(target: Live) {
+        val policy = policy ?: return
+        if (keepAliveMillis <= 0) return
+        val session = target.session
+        val transport = object : SshKeepAliveTransport {
+            override val isConnected: Boolean get() = session.isConnected
+            override val idle: Boolean get() = metricsTracker.metrics.value.activeConnections == 0
+            override fun readMark(): Long = target.socketFactory.readMark()
+            override suspend fun awaitReadAfter(mark: Long, timeoutMillis: Long) =
+                target.socketFactory.awaitReadAfter(mark, timeoutMillis)
+            override fun sendKeepAlive() = session.sendKeepAliveMsg()
+            override fun setBackstopIntervalMillis(intervalMillis: Int) { session.serverAliveInterval = intervalMillis }
+            override fun declareDead() = session.disconnect()
+        }
+        target.heartbeat = scope.launch { SshHeartbeat(transport, policy.heartbeat, keepAliveMillis, policy.counters).run() }
+    }
+
+    override fun enableStandby(
+        policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy,
+        credentials: suspend () -> SshCredentials,
+    ) {
+        this.policy = policy
+        reopenCredentials = credentials
+        scope.launch {
+            combine(policy.profile, policy.visible, metricsTracker.metrics, mutableStandby) { profile, visible, metrics, parked ->
+                profile == PowerProfile.SAVER && !visible && metrics.activeConnections == 0 && !parked
+            }.distinctUntilChanged().collectLatest { idle ->
+                if (idle) {
+                    delay(policy.standbyAfterIdleMillis)
+                    enterStandby(policy)
+                }
+            }
+        }
+    }
+
+    private fun enterStandby(policy: dev.portweave.tunnel.engine.RuntimeWorkPolicy) = synchronized(swapLock) {
+        val current = live
+        if (mutableStandby.value || lost.isCompleted || !current.session.isConnected) return@synchronized
+        if (metricsTracker.metrics.value.activeConnections != 0) return@synchronized
+        current.retired = true
+        current.heartbeat?.cancel()
+        runCatching { current.session.disconnect() }
+        jsch.removeAllIdentity()
+        mutableStandby.value = true
+        policy.counters.increment("sshStandbyEntries")
+    }
+
+    /** The session a new client should use; after standby this blocks the client's thread while reconnecting. */
+    private fun acquireSession(): Session = synchronized(swapLock) {
+        if (lost.isCompleted) throw java.io.IOException("ssh session lost")
+        if (!mutableStandby.value) return@synchronized live.session.takeIf { it.isConnected }
+            ?: throw java.io.IOException("ssh session lost")
+        val credentials = reopenCredentials ?: throw java.io.IOException("ssh standby cannot reopen")
+        try {
+            kotlinx.coroutines.runBlocking { reopen(credentials) }
+        } catch (failure: Exception) {
+            // Let the runner restart the tunnel: its normal start path maps the error and applies retry tiers.
+            lost.complete(Unit)
+            throw java.io.IOException("ssh standby reopen failed", failure)
+        }
+        live.session
+    }
+
+    private suspend fun reopen(credentials: suspend () -> SshCredentials) {
+        val next = Live(jsch.getSession(username, host, port))
+        val secrets = credentials()
+        try {
+            hostKeyRepository?.let(next.session::setHostKeyRepository)
+            configs.forEach { (key, value) -> next.session.setConfig(key, value) }
+            next.session.serverAliveInterval = aliveIntervalMillis
+            val name = identityName
+            when {
+                name != null -> addIdentity(name, requireNotNull(secrets.privateKey), secrets.passphrase)
+                else -> next.session.setPassword(requireNotNull(secrets.password))
+            }
+            next.socketFactory.connectTimeoutMillis = connectTimeoutMillis
+            next.session.connect(connectTimeoutMillis)
+            (hostKeyRepository as? PinnedSshHostKeyRepository)?.let { pinned ->
+                if (pinned.mismatchObserved || pinned.matchedFingerprint == null) error("ssh_host_key_mismatch")
+            }
+        } catch (failure: Exception) {
+            runCatching { next.session.disconnect() }
+            jsch.removeAllIdentity()
+            throw failure
+        } finally {
+            secrets.close()
+        }
+        watchForLoss(next)
+        live = next
+        mutableStandby.value = false
+        startHeartbeat(next)
+        policy?.counters?.increment("sshStandbyResumes")
+    }
+
+    private fun watchForLoss(target: Live) {
+        target.socketFactory.connectionLost.invokeOnCompletion { if (!target.retired) lost.complete(Unit) }
+    }
+
     override fun addIdentity(name: String, privateKey: ByteArray, passphrase: ByteArray?) {
+        identityName = name
         try {
             // Load without a passphrase so an encrypted key can be distinguished from a bad key.
             jsch.addIdentity(name, privateKey, null, null)
@@ -365,10 +559,13 @@ private class JschSessionHandle(private val jsch: JSch, private val session: Ses
             phrase.fill(0)
         }
     }
-    override fun setPassword(password: ByteArray) = session.setPassword(password)
+    override fun setPassword(password: ByteArray) = live.session.setPassword(password)
     override fun connect(timeoutMillis: Int) {
-        socketFactory.connectTimeoutMillis = timeoutMillis
-        session.connect(timeoutMillis)
+        connectTimeoutMillis = timeoutMillis
+        val current = live
+        current.socketFactory.connectTimeoutMillis = timeoutMillis
+        current.session.connect(timeoutMillis)
+        watchForLoss(current)
     }
     override fun setPortForwardingL(
         bindAddress: String,
@@ -378,7 +575,7 @@ private class JschSessionHandle(private val jsch: JSch, private val session: Ses
     ): Int {
         require(bindAddress == "127.0.0.1") { "Only IPv4 loopback forwarding is supported" }
         val forwarder = LoopbackForwarder(
-            session,
+            ::acquireSession,
             localPort,
             remoteHost,
             remotePort,
@@ -389,20 +586,25 @@ private class JschSessionHandle(private val jsch: JSch, private val session: Ses
         return boundPort
     }
     override fun disconnect() {
+        scope.cancel()
         forwarders.toList().forEach(LoopbackForwarder::close)
         forwarders.clear()
+        val current = live
         try {
-            session.disconnect()
+            current.session.disconnect()
         } finally {
-            socketFactory.abort()
+            current.socketFactory.abort()
             jsch.removeAllIdentity()
             metricsTracker.close()
+            mutableStandby.value = false
+            lost.complete(Unit)
         }
     }
 }
 
 private class LoopbackForwarder(
-    private val session: Session,
+    /** Supplies a connected session for each new client; may reconnect a parked session first. */
+    private val sessions: () -> Session,
     private val requestedPort: Int,
     private val remoteHost: String,
     private val remotePort: Int,
@@ -431,7 +633,7 @@ private class LoopbackForwarder(
 
     private fun acceptLoop() {
         try {
-            while (running.get() && session.isConnected) {
+            while (running.get()) {
                 val socket = try {
                     serverSocket.accept()
                 } catch (_: Exception) {
@@ -454,7 +656,7 @@ private class LoopbackForwarder(
         var channel: ChannelDirectTCPIP? = null
         try {
             socket.tcpNoDelay = true
-            channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
+            channel = sessions().openChannel("direct-tcpip") as ChannelDirectTCPIP
             channels += channel
             channel.setHost(remoteHost)
             channel.setPort(remotePort)
@@ -555,6 +757,8 @@ private fun secondsToMillis(seconds: Int): Int {
     require(seconds in 1..Int.MAX_VALUE / 1_000)
     return seconds * 1_000
 }
+
+private val NeverStandby: StateFlow<Boolean> = MutableStateFlow(false)
 
 private val ProviderLock = Any()
 

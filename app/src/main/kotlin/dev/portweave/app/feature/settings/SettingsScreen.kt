@@ -57,6 +57,9 @@ import dev.portweave.app.ui.component.AdaptiveScreen
 import dev.portweave.app.ui.component.PortWeaveSwitch
 import dev.portweave.core.data.repository.ConfigRepository
 import dev.portweave.core.data.settings.AppSettings
+import dev.portweave.app.feature.background.BackgroundRunGuideText
+import dev.portweave.app.feature.background.openAppDetails
+import dev.portweave.core.data.settings.PowerProfile
 import dev.portweave.core.data.settings.SettingsStore
 import dev.portweave.core.data.settings.ThemeMode
 import dev.portweave.core.data.transfer.ConfigTransferService
@@ -231,6 +234,23 @@ fun SettingsScreen(
             }
 
             Text("后台运行", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 20.dp))
+            Text("省电档位", style = MaterialTheme.typography.titleMedium)
+            PowerProfile.entries.forEach { profile ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().selectable(
+                        selected = settings.powerProfile == profile,
+                        role = Role.RadioButton,
+                        onClick = { scope.launch { settingsStore.setPowerProfile(profile) } },
+                    ).padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = settings.powerProfile == profile, onClick = null)
+                    Column(modifier = Modifier.padding(start = 8.dp)) {
+                        Text(profile.displayName())
+                        Text(profile.description(), color = PortWeaveThemeTokens.status.mutedText)
+                    }
+                }
+            }
             Text("忽略电池优化", style = MaterialTheme.typography.titleMedium)
             Text(
                 if (ignoringBatteryOptimizations) {
@@ -250,6 +270,15 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(if (ignoringBatteryOptimizations) "已完成" else "申请忽略电池优化")
+            }
+            Text("厂商后台设置", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "部分手机系统会额外限制后台应用。若映射在后台经常中断，可放宽对 PortWeave 的限制：",
+                color = PortWeaveThemeTokens.status.mutedText,
+            )
+            BackgroundRunGuideText()
+            OutlinedButton(onClick = { openAppDetails(context) }, modifier = Modifier.fillMaxWidth()) {
+                Text("打开应用设置")
             }
 
             Text("数据", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 20.dp))
@@ -316,6 +345,18 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+private fun PowerProfile.displayName(): String = when (this) {
+    PowerProfile.REALTIME -> "实时"
+    PowerProfile.BALANCED -> "均衡（推荐）"
+    PowerProfile.SAVER -> "省电"
+}
+
+private fun PowerProfile.description(): String = when (this) {
+    PowerProfile.REALTIME -> "后台始终按配置的间隔保活，熄屏时也不暂停重连。耗电最高。"
+    PowerProfile.BALANCED -> "后台自动拉长保活间隔，多次连不上时暂停重连，等网络变化或打开应用再试。"
+    PowerProfile.SAVER -> "在均衡基础上更早暂停重连；SSH 映射在后台空闲 5 分钟后断开远端会话，有新连接时自动重连，首个连接会稍慢。"
 }
 
 private fun ThemeMode.displayName(): String = when (this) {

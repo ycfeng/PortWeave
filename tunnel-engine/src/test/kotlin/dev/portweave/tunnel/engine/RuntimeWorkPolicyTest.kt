@@ -87,6 +87,22 @@ class RuntimeWorkPolicyTest {
         assertEquals(60_000L, policy.retryDelay(100, nowMillis = 7, jitter = { it }))
     }
 
+    @Test fun profileAdjustsTiers() {
+        val policy = RuntimeWorkPolicy().apply { interactive.value = false }
+        assertEquals(15 * 60_000L, policy.retryCeilingMillis(policy.mode))
+        assertEquals(10, policy.dormantAfterFailures(policy.mode))
+        // Realtime treats a dark screen like an ordinary background.
+        policy.profile.value = dev.portweave.core.data.settings.PowerProfile.REALTIME
+        assertEquals(5 * 60_000L, policy.retryCeilingMillis(policy.mode))
+        assertEquals(20, policy.dormantAfterFailures(policy.mode))
+        // Saver gives up on timers after half as many failures.
+        policy.profile.value = dev.portweave.core.data.settings.PowerProfile.SAVER
+        assertEquals(5, policy.dormantAfterFailures(policy.mode))
+        assertEquals(null, policy.retryDelay(5, nowMillis = 0, jitter = { 0 }))
+        policy.visible.value = true
+        assertEquals(null, policy.dormantAfterFailures(policy.mode))
+    }
+
     @Test fun dormantWaitEndsOnlyOnWakeTriggers() = runTest {
         val policy = RuntimeWorkPolicy().apply { interactive.value = false }
         var wakes = 0

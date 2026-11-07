@@ -1,12 +1,15 @@
 package dev.portweave.tunnel.engine.ssh
 
 import com.jcraft.jsch.SocketFactory
+import java.io.FilterInputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Lets a JSch session report its own end instead of being polled. In JSch 2.28.3 every way a session ends
@@ -25,6 +28,22 @@ internal class DisconnectAwareSocketFactory : SocketFactory {
     /** Completes once the established connection's socket has been closed, for whatever reason. */
     val connectionLost: Deferred<Unit> get() = lost
 
+    // Only JSch's single reader thread reads the stream, so a volatile counter is enough.
+    @Volatile private var reads = 0L
+    private val readWaiter = AtomicReference<CompletableDeferred<Unit>?>()
+
+    /** Counts reads that returned data or EOF; a change proves the server is still talking. */
+    fun readMark(): Long = reads
+
+    suspend fun awaitReadAfter(mark: Long, timeoutMillis: Long): Boolean = withTimeoutOrNull(timeoutMillis) {
+        while (reads == mark) {
+            val waiter = CompletableDeferred<Unit>()
+            readWaiter.set(waiter)
+            if (reads != mark) break
+            waiter.await()
+        }
+    } != null
+
     override fun createSocket(host: String, port: Int): Socket {
         val socket = SignallingSocket(lost)
         current = socket
@@ -38,7 +57,15 @@ internal class DisconnectAwareSocketFactory : SocketFactory {
         return socket
     }
 
-    override fun getInputStream(socket: Socket): InputStream = socket.getInputStream()
+    override fun getInputStream(socket: Socket): InputStream = object : FilterInputStream(socket.getInputStream()) {
+        override fun read(): Int = super.read().also { observed() }
+        override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it != 0) observed() }
+    }
+
+    private fun observed() {
+        reads += 1
+        readWaiter.getAndSet(null)?.complete(Unit)
+    }
 
     override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
 

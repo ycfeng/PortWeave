@@ -63,6 +63,19 @@ fun interface FrpcReconnectGate {
     suspend fun awaitReconnect(attempt: Int, defaultDelayMillis: Long)
 }
 
+/**
+ * Optional host hook that schedules the transport keepalive (yamux ping) instead of the built-in fixed 30s interval,
+ * for example to line up the keepalives of several tunnels or stretch them while the host app is in the background.
+ * An unanswered ping still closes the transport exactly as before.
+ */
+interface FrpcKeepAliveScheduler {
+    /** Suspends until the next keepalive ping is due; [defaultIntervalMillis] is the built-in interval. */
+    suspend fun awaitNextKeepAlive(defaultIntervalMillis: Long)
+
+    /** Reports whether the ping sent after the last wait was answered in time. */
+    fun onKeepAliveResult(answered: Boolean) {}
+}
+
 /** Optional aggregate diagnostics used only by bounded backend lifecycle evidence. */
 interface FrpcStcpVisitorRuntimeDiagnostics {
     suspend fun captureRuntimeDiagnostics(): FrpcRuntimeDiagnostics

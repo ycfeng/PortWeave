@@ -73,6 +73,10 @@ class TunnelForegroundService : Service() {
         scope.launch {
             container.eventRepository.prune(container.settingsStore.settings.first().logRetentionDays)
         }
+        scope.launch {
+            container.settingsStore.settings.map { it.powerProfile }.distinctUntilChanged()
+                .collect { container.workPolicy.profile.value = it }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

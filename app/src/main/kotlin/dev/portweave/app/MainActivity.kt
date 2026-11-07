@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.portweave.app.feature.background.BackgroundRestrictionPrompt
 import dev.portweave.app.navigation.PortWeaveNavGraph
 import dev.portweave.app.ui.theme.PortWeaveTheme
 
@@ -20,6 +21,7 @@ class MainActivity : ComponentActivity() {
             )
             PortWeaveTheme(settings = settings) {
                 PortWeaveNavGraph(container = container)
+                BackgroundRestrictionPrompt(container)
             }
         }
     }

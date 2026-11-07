@@ -80,14 +80,22 @@ class KotlinFrpcStcpVisitorClient private constructor(
         runtimeDelayer = CoroutineFrpRuntimeDelayer,
     )
 
-    /** [reconnectGate] lets the host app stretch or pause control reconnects; null keeps frpc timing. */
-    constructor(context: Context, reconnectGate: FrpcReconnectGate? = null) : this(
+    /**
+     * [reconnectGate] lets the host app stretch or pause control reconnects and [keepAliveScheduler] schedules
+     * transport keepalives; null keeps frpc timing for either.
+     */
+    constructor(
+        context: Context,
+        reconnectGate: FrpcReconnectGate? = null,
+        keepAliveScheduler: FrpcKeepAliveScheduler? = null,
+    ) : this(
         parentContext = Dispatchers.IO + CoroutineName("KotlinFrpcClientRoot"),
         controlFactory = ProductionFrpSessionControlFactory(
             AndroidDefaultNetworkTcpDialRouteProvider(
                 checkNotNull(context.applicationContext.getSystemService(ConnectivityManager::class.java)),
             ),
             reconnectGate,
+            keepAliveScheduler,
         ),
         listenerFactory = SocketFrpLocalListenerFactory(),
         unixTimeSource = SystemFrpUnixTimeSource,

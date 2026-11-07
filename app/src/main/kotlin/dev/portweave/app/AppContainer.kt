@@ -16,6 +16,7 @@ import dev.portweave.core.security.CredentialStore
 import dev.portweave.app.service.RuntimeStateStore
 import dev.portweave.app.service.TunnelServiceClient
 import dev.portweave.tunnel.engine.ssh.SshTunnelBackend
+import dev.portweave.tunnel.engine.stcp.CoordinatedKeepAliveScheduler
 import dev.portweave.tunnel.engine.stcp.FrpcStcpBackend
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcReconnectGate
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorClient
@@ -47,6 +48,7 @@ class AppContainer(application: Application) {
                 FrpcReconnectGate { attempt, defaultDelayMillis ->
                     workPolicy.awaitTransportReconnect(attempt, defaultDelayMillis)
                 },
+                CoordinatedKeepAliveScheduler(workPolicy),
             )
         },
         workPolicy = workPolicy,

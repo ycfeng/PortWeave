@@ -1,5 +1,6 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime
 
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcKeepAliveScheduler
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcReconnectGate
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcSessionConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
@@ -27,6 +28,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTcpEndpoint
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.TcpDialRouteProvider
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.TcpTlsTransportConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.TcpTlsYamuxConnector
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.productionFrpYamuxConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.YamuxStreamBlockingIo
 import java.io.InputStream
 import java.io.OutputStream
@@ -92,6 +94,7 @@ internal fun interface FrpSessionControlFactory {
 internal class ProductionFrpSessionControlFactory(
     private val routeProvider: TcpDialRouteProvider? = null,
     private val reconnectGate: FrpcReconnectGate? = null,
+    private val keepAliveScheduler: FrpcKeepAliveScheduler? = null,
 ) : FrpSessionControlFactory {
     override fun create(
         config: FrpcSessionConfig,
@@ -113,6 +116,7 @@ internal class ProductionFrpSessionControlFactory(
             ),
             parentScope = parentScope,
             routeProvider = routeProvider,
+            yamuxConfig = productionFrpYamuxConfig(keepAliveScheduler),
         )
         return FrpControlAdapter(
             FrpControlClient(

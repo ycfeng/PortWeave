@@ -1053,11 +1053,14 @@ internal class YamuxClientSession(
     }
 
     private suspend fun runKeepAlive() {
+        val scheduler = config.keepAliveScheduler
         while (!ending) {
-            delay(config.keepAliveIntervalMillis)
+            if (scheduler == null) delay(config.keepAliveIntervalMillis)
+            else scheduler.awaitNextKeepAlive(config.keepAliveIntervalMillis)
             if (ending) return
             try {
                 pingInternal(YamuxTimeoutKind.KEEPALIVE)
+                scheduler?.onKeepAliveResult(answered = true)
             } catch (failure: CancellationException) {
                 if (!ending) terminateNow(failure)
                 return
@@ -1065,6 +1068,7 @@ internal class YamuxClientSession(
                 terminateNow(failure)
                 return
             } catch (failure: YamuxFailure) {
+                if (failure is YamuxTimeoutFailure) scheduler?.onKeepAliveResult(answered = false)
                 if (!ending) terminateNow(failure)
                 return
             } catch (failure: Exception) {
