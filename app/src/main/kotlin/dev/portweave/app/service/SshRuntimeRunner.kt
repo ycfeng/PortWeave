@@ -68,6 +68,7 @@ class SshRuntimeRunner(
     private val networkStatus: StateFlow<NetworkStatus>? = null,
     private val eventRepository: EventRepository? = null,
     private val desiredRoots: suspend () -> Set<UUID> = { emptySet() },
+    private val nowMillis: () -> Long = System::currentTimeMillis,
 ) {
     private val networkAvailableCheck = networkAvailable ?: {
         val manager = requireNotNull(context).getSystemService(ConnectivityManager::class.java)
@@ -139,7 +140,7 @@ class SshRuntimeRunner(
                         attempt++
                         val cap = min(60_000L, 1_000L shl min(attempt - 1, 15))
                         val wait = randomDelayMillis(cap).coerceIn(0, cap)
-                        stateStore.update(configId, TunnelState.Reconnecting(attempt, System.currentTimeMillis() + wait))
+                        stateStore.update(configId, TunnelState.Reconnecting(attempt, nowMillis() + wait))
                         record(configId, 0, EventLevel.WARNING, TunnelEventCode.RETRY_SCHEDULED, "retry_scheduled")
                         delay(wait)
                     }
@@ -255,7 +256,7 @@ class SshRuntimeRunner(
             workCounters.increment("backendStarts")
             val handle = startBackend(config)
             stateStore.updateMetrics(config.id, handle.capabilities, handle.metrics.value, generation)
-            stateStore.update(config.id, TunnelState.Ready(System.currentTimeMillis()))
+            stateStore.update(config.id, TunnelState.Ready(nowMillis()))
             record(config.id, generation, EventLevel.INFO, TunnelEventCode.TUNNEL_READY, "tunnel_ready")
             val stopped = java.util.concurrent.atomic.AtomicBoolean()
             suspend fun stopHandle() {
@@ -356,7 +357,7 @@ class SshRuntimeRunner(
                             stateStore.updateIfGeneration(configId, generation, TunnelState.Reconnecting(1, null))
                         } else {
                             if (stateStore.states.value[configId] !is TunnelState.Ready) {
-                                stateStore.updateIfGeneration(configId, generation, TunnelState.Ready(System.currentTimeMillis()))
+                                stateStore.updateIfGeneration(configId, generation, TunnelState.Ready(nowMillis()))
                             }
                             if (lastEpoch != null && lastEpoch != status.epoch) {
                                 workCounters.increment("stcpTransportRecoveries")
@@ -372,13 +373,13 @@ class SshRuntimeRunner(
                     val config = repository.find(configId)
                     if (config?.autoRecover == true && handle.failure?.retryable != false) {
                         val runtime = stateStore.runtime.value[configId]
-                        val stable = runtime?.lastReadyAtEpochMillis?.let { System.currentTimeMillis() - it >= 60_000L } == true
+                        val stable = runtime?.lastReadyAtEpochMillis?.let { nowMillis() - it >= StableConnectionMillis } == true
                         val attempt = if (stable) 1 else snapshotAttempt(configId) + 1
                         val cap = min(60_000L, 1_000L shl min(attempt - 1, 15))
                         val wait = if (networkAvailableCheck()) randomDelayMillis(cap).coerceIn(0, cap) else 0L
                         stateStore.update(
                             configId,
-                            TunnelState.Reconnecting(attempt, wait.takeIf { it > 0 }?.let { System.currentTimeMillis() + it }),
+                            TunnelState.Reconnecting(attempt, wait.takeIf { it > 0 }?.let { nowMillis() + it }),
                         )
                         scheduleRecovery(configId, generation, wait)
                     } else {
@@ -484,10 +485,19 @@ class SshRuntimeRunner(
                     code = code,
                     messageKey = key,
                     elapsedRealtimeMillis = System.nanoTime() / 1_000_000L,
-                    occurredAtEpochMillis = System.currentTimeMillis(),
+                    occurredAtEpochMillis = nowMillis(),
                 ),
             )
         }
+    }
+
+    private companion object {
+        /**
+         * A connection must stay up this long before its reconnect backoff resets. A short window lets a
+         * link that is reclaimed every minute or two (NAT timeout, weak signal) reconnect almost immediately
+         * forever, which vendor power monitors flag as frequent background refresh.
+         */
+        const val StableConnectionMillis = 5 * 60_000L
     }
 }
 

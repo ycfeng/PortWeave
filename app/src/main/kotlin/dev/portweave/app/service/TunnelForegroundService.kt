@@ -24,9 +24,15 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class TunnelForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -142,15 +148,27 @@ class TunnelForegroundService : Service() {
         }
         lastNotificationModel = model
         if (notificationJob == null) {
+            val policy = container.workPolicy
             notificationJob = scope.launch(Dispatchers.Main.immediate) {
-                container.runtimeStateStore.states.collectLatest { states ->
-                    val next = TunnelNotificationModel.from(states.values)
-                    if (next != lastNotificationModel) {
+                // Nobody can see the notification while the screen is off, so updates wait for SCREEN_ON;
+                // in the background they are coalesced so reconnect flapping does not count as frequent refresh.
+                combine(
+                    container.runtimeStateStore.states
+                        .map { TunnelNotificationModel.from(it.values) }
+                        .distinctUntilChanged(),
+                    policy.interactive,
+                ) { model, screenOn -> model.takeIf { screenOn } }
+                    .filterNotNull()
+                    .conflate()
+                    .collect { next ->
+                        if (!policy.interactive.value || next == lastNotificationModel) return@collect
                         lastNotificationModel = next
                         notificationManager.notify(NotificationId, notification(next))
-                        container.workPolicy.counters.increment("notificationUpdates")
+                        policy.counters.increment("notificationUpdates")
+                        if (!policy.visible.value) {
+                            withTimeoutOrNull(BackgroundNotificationIntervalMillis) { policy.visible.first { it } }
+                        }
                     }
-                }
             }
         }
     }
@@ -206,6 +224,7 @@ class TunnelForegroundService : Service() {
             .setContentText("$ready 个就绪 · ${active - ready} 个正在连接或恢复")
             .setContentIntent(openIntent)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .addAction(Notification.Action.Builder(null, "停止全部", stopIntent).build())
         if (model.recoverable) builder.addAction(Notification.Action.Builder(null, "立即重试", retryIntent).build())
@@ -231,6 +250,7 @@ class TunnelForegroundService : Service() {
         private const val ExtraConfigId = "config_id"
         private const val ChannelId = "port_mappings"
         private const val NotificationId = 1001
+        private const val BackgroundNotificationIntervalMillis = 10_000L
 
         fun start(context: Context, configId: UUID) {
             val intent = Intent(context, TunnelForegroundService::class.java)

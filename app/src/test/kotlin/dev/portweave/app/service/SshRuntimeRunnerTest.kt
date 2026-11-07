@@ -185,6 +185,36 @@ class SshRuntimeRunnerTest {
         runner.stopAll()
     }
 
+    @Test fun backoffResetsOnlyAfterConnectionStaysUpForFiveMinutes() = runTest {
+        val config = runtimeConfig()
+        val backend = ControlledBackend()
+        val states = RuntimeStateStore()
+        var now = 1_000_000L
+        val runner = SshRuntimeRunner(null, backgroundScope, FakeConfigRepository(config),
+            FakeCredentialStore(), backend, states, networkAvailable = { true },
+            desiredRoots = { setOf(config.id) }, randomDelayMillis = { 0 }, nowMillis = { now })
+        assertTrue(runner.startAndAwait(config.id))
+        runCurrent()
+
+        backend.handles.getValue(config.id).lost.complete(Unit)
+        runCurrent()
+        assertEquals(1, states.runtime.value.getValue(config.id).reconnectCount)
+
+        // Up for four minutes: the old 60 s window treated this as stable and reset the backoff.
+        now += 4 * 60_000L
+        backend.handles.getValue(config.id).lost.complete(Unit)
+        runCurrent()
+        assertEquals(2, states.runtime.value.getValue(config.id).reconnectCount)
+
+        now += 5 * 60_000L
+        backend.handles.getValue(config.id).lost.complete(Unit)
+        runCurrent()
+        assertEquals(2, states.runtime.value.getValue(config.id).reconnectCount)
+        assertEquals(4, backend.starts.count { it == config.id })
+        assertTrue(states.states.value[config.id] is TunnelState.Ready)
+        runner.stopAll()
+    }
+
     @Test fun stopDuringRecoveryDelayNeverRestartsTunnel() = runTest {
         val config = runtimeConfig()
         val backend = ControlledBackend()
