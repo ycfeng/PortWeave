@@ -1,5 +1,6 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control
 
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcReconnectGate
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FRP_AEAD_AES_256_GCM
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FRP_AEAD_XCHACHA20_POLY1305
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpSafeIOException
@@ -119,6 +120,8 @@ internal data class FrpControlConfig(
         FRP_AEAD_AES_256_GCM,
         FRP_AEAD_XCHACHA20_POLY1305,
     ),
+    /** Replaces the reconnect delay below when set; null keeps the built-in frpc-compatible backoff. */
+    val reconnectGate: FrpcReconnectGate? = null,
 ) {
     init {
         val heartbeatEnabled = heartbeatIntervalMillis > 0L
@@ -159,7 +162,7 @@ internal data class FrpControlConfig(
             "writerQueueCapacity=$writerQueueCapacity, workQueueCapacity=$workQueueCapacity, " +
             "workWorkerCount=$workWorkerCount, maxActiveWorkConnections=$maxActiveWorkConnections, " +
             "reconnectCleanupTimeoutMillis=$reconnectCleanupTimeoutMillis, " +
-            "aeadAlgorithmCount=${preferredAeadAlgorithms.size})"
+            "aeadAlgorithmCount=${preferredAeadAlgorithms.size}, reconnectGatePresent=${reconnectGate != null})"
 
     internal companion object {
         const val DEFAULT_LOGIN_TIMEOUT_MILLIS = 10_000L

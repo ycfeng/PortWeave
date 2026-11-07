@@ -20,7 +20,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import dev.portweave.tunnel.engine.RuntimeWorkPolicy
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.bouncycastle.openssl.PKCS8Generator
 import org.bouncycastle.openssl.jcajce.JcaPEMWriter
 import org.bouncycastle.openssl.jcajce.JcaPKCS8Generator
@@ -38,6 +43,35 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SshTunnelIntegrationTest {
+    @Test
+    fun serverSideDisconnectIsReportedImmediatelyWithoutPolling() = withHarness { harness ->
+        runBlocking {
+            val config = harness.config(SshAuthMethod.PASSWORD)
+            val pin = harness.backend.discoverHostKey(config).sha256Fingerprint
+            val policy = RuntimeWorkPolicy()
+            val credentials = SshCredentials(Password.toByteArray(), hostFingerprint = pin.toByteArray())
+            val handle = try {
+                SshTunnelBackend(policy).start(config, credentials)
+            } finally {
+                credentials.close()
+            }
+            try {
+                val lost = async(Dispatchers.Default) { handle.awaitConnectionLost() }
+                delay(300)
+                assertTrue(lost.isActive)
+                val droppedAt = System.nanoTime()
+                harness.dropSessions()
+                withTimeout(10_000) { lost.await() }
+                // An idle background tunnel used to be polled every 30s; the closed socket reports itself.
+                assertTrue((System.nanoTime() - droppedAt) / 1_000_000 < 2_000)
+                assertEquals(1L, policy.counters.snapshot()["sshStateChecks"])
+                assertTrue(!handle.isConnected)
+            } finally {
+                handle.stop()
+            }
+        }
+    }
+
     @Test
     fun reconnectRebindsSamePortAfterClosingAnActiveClient() = withHarness { harness ->
         runBlocking {
@@ -381,6 +415,8 @@ private class SshHarness : AutoCloseable {
         start()
     }
     val backend = SshTunnelBackend()
+
+    fun dropSessions() = ssh.activeSessions.forEach { it.close(true) }
 
     fun config(authMethod: SshAuthMethod): TunnelConfig {
         val localPort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }

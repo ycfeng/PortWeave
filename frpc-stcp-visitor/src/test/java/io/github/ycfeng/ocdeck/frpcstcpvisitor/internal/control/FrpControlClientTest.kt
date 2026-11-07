@@ -429,6 +429,52 @@ class FrpControlClientTest {
     }
 
     @Test
+    fun reconnectGateReplacesTheBuiltInReconnectDelay() = runBlocking {
+        val fixture = v1Fixture()
+        val firstMux = FakeMuxConnection(listOf(stableV1ControlStream()))
+        val secondMux = FakeMuxConnection(listOf(stableV1ControlStream()))
+        val connector = RecordingConnector { index -> if (index == 0) firstMux else secondMux }
+        val delayer = ManualDelayer()
+        val gateCalls = Channel<Pair<Int, Long>>(Channel.UNLIMITED)
+        val gateRelease = CompletableDeferred<Unit>()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(
+                reconnectInitialDelayMillis = 100L,
+                reconnectMaximumDelayMillis = 20_000L,
+                reconnectGate = io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcReconnectGate { attempt, defaultDelay ->
+                    gateCalls.send(attempt to defaultDelay)
+                    gateRelease.await()
+                },
+            ),
+            connector = connector,
+            parentScope = parentScope,
+            generation = 23L,
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            client.invalidateTransport()
+            // The host decides when to reconnect; it still learns the frpc-compatible default.
+            assertEquals(1 to 100L, withTimeout(5_000L) { gateCalls.receive() })
+            assertEquals(1, connector.connectCount.get())
+            gateRelease.complete(Unit)
+            waitUntil {
+                val state = client.state.value
+                state is FrpControlState.Open && state.identity.controlEpoch == 2L
+            }
+            assertEquals(2, connector.connectCount.get())
+        } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun failedReconnectAttemptPublishesItsSpecificFailure() = runBlocking {
         val fixture = v1Fixture()
         val firstMux = FakeMuxConnection(listOf(stableV1ControlStream()))

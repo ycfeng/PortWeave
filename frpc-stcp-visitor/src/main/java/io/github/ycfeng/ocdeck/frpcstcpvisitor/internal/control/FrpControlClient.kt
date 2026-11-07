@@ -428,7 +428,7 @@ internal class FrpControlClient(
                     retryAttempt = incrementAttempt(retryAttempt)
                     val delayMillis = reconnectDelay(retryAttempt)
                     publish(FrpControlState.Retrying(generation, retryAttempt, delayMillis, mapped.failure))
-                    delayer.delayMillis(delayMillis)
+                    awaitReconnect(retryAttempt, delayMillis)
                     continue
                 }
 
@@ -528,7 +528,7 @@ internal class FrpControlClient(
                 }
                 if (terminateAfterCleanup) return
                 if (!hasActiveOwnerLease()) return
-                delayer.delayMillis(checkNotNull(retryDelayMillis))
+                awaitReconnect(retryAttempt, checkNotNull(retryDelayMillis))
             }
         } catch (failure: CancellationException) {
             escapingFailure = failure
@@ -794,7 +794,12 @@ internal class FrpControlClient(
     private suspend fun delayBeforeRetry(attempt: Int, failure: FrpControlFailure) {
         val delayMillis = reconnectDelay(attempt)
         publish(FrpControlState.Retrying(generation, attempt, delayMillis, failure))
-        delayer.delayMillis(delayMillis)
+        awaitReconnect(attempt, delayMillis)
+    }
+
+    private suspend fun awaitReconnect(attempt: Int, delayMillis: Long) {
+        val gate = config.reconnectGate
+        if (gate == null) delayer.delayMillis(delayMillis) else gate.awaitReconnect(attempt, delayMillis)
     }
 
     private fun reconnectDelay(attempt: Int): Long {

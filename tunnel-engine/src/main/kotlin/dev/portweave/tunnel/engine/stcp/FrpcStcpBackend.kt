@@ -3,6 +3,7 @@ package dev.portweave.tunnel.engine.stcp
 import dev.portweave.tunnel.engine.RuntimeWorkPolicy
 import dev.portweave.tunnel.engine.RecoveringBackendHandle
 import dev.portweave.tunnel.engine.BackendAvailability
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorNetworkChangeAware
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorStateObservable
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorState
 import kotlinx.coroutines.flow.first
@@ -200,6 +201,21 @@ private class FrpcStcpHandle(
             throw cancelled
         } catch (_: Exception) {
             connected.set(false)
+        }
+    }
+
+    override suspend fun reconnectTransport(): Boolean {
+        val aware = client as? FrpcStcpVisitorNetworkChangeAware ?: return false
+        // Without auto-recovery a reconnecting control connection counts as lost, so a rebuild is the honest path.
+        if (!autoRecover || !connected.get()) return false
+        return try {
+            aware.reconnectAfterDefaultNetworkChange()
+            workPolicy.counters.increment("stcpTransportReconnects")
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
         }
     }
 

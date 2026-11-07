@@ -653,6 +653,45 @@ class KotlinFrpcStcpVisitorClientTest {
     }
 
     @Test
+    fun repeatedBindFailuresBackOffExponentiallyFromTheFirstTenSeconds() = runBlocking {
+        val controlFactory = FakeControlFactory()
+        val delayer = ManualRuntimeDelayer()
+        val listenerFactory = FakeListenerFactory().apply { nextFailure = java.net.BindException("busy") }
+        val controlStates = Channel<FrpControlState>(Channel.UNLIMITED)
+        val parentScope = newParentScope()
+        val client = newClient(
+            parentScope,
+            controlFactory,
+            listenerFactory,
+            runtimeDelayer = delayer,
+            hooks = KotlinFrpcRuntimeLifecycleHooks(
+                afterControlState = { controlStates.send(it) },
+            ),
+        )
+        val sessionId = client.startSession(sessionConfig())
+        val control = controlFactory.single()
+        try {
+            control.open(epoch = 1L, transport = 1L)
+            awaitControlState(controlStates) { it is FrpControlState.Open }
+            client.ensureVisitor(sessionId, visitorConfig(bindPort = 50_070))
+            var retry = delayer.takeCall(10_000L)
+            for (expected in listOf(20_000L, 40_000L)) {
+                listenerFactory.nextFailure = java.net.BindException("busy")
+                retry.release.complete(Unit)
+                retry = delayer.takeCall(expected)
+            }
+            retry.release.complete(Unit)
+            listenerFactory.takeBinding()
+            assertEquals(4, listenerFactory.bindCount.get())
+        } finally {
+            control.releaseStop()
+            client.stopSession(sessionId, 5_000L)
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun ordinaryListenerBindFailureRemainsListenerBindFailed() = runBlocking {
         val marker = "ordinary-listener-failure-marker"
         val controlFactory = FakeControlFactory()

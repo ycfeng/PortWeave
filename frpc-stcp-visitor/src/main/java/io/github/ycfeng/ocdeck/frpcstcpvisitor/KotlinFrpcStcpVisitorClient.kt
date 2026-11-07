@@ -80,12 +80,14 @@ class KotlinFrpcStcpVisitorClient private constructor(
         runtimeDelayer = CoroutineFrpRuntimeDelayer,
     )
 
-    constructor(context: Context) : this(
+    /** [reconnectGate] lets the host app stretch or pause control reconnects; null keeps frpc timing. */
+    constructor(context: Context, reconnectGate: FrpcReconnectGate? = null) : this(
         parentContext = Dispatchers.IO + CoroutineName("KotlinFrpcClientRoot"),
         controlFactory = ProductionFrpSessionControlFactory(
             AndroidDefaultNetworkTcpDialRouteProvider(
                 checkNotNull(context.applicationContext.getSystemService(ConnectivityManager::class.java)),
             ),
+            reconnectGate,
         ),
         listenerFactory = SocketFrpLocalListenerFactory(),
         unixTimeSource = SystemFrpUnixTimeSource,
@@ -869,9 +871,13 @@ private class KotlinFrpcRuntimeSession(
             desiredRevision = visitor.desiredRevision,
             attemptOrdinal = ++listenerAttemptSequence,
         )
+        // A port held by another app rarely frees itself within seconds; back off instead of probing it forever.
+        val retryDelayMillis = (VISITOR_BIND_RETRY_DELAY_MILLIS shl visitor.bindRetries.coerceAtMost(5))
+            .coerceAtMost(MAXIMUM_VISITOR_BIND_RETRY_DELAY_MILLIS)
+        visitor.bindRetries = (visitor.bindRetries + 1).coerceAtMost(Int.MAX_VALUE - 1)
         val job = launchOwned("KotlinFrpcVisitorBindRetry") {
             try {
-                runtimeDelayer.delayMillis(VISITOR_BIND_RETRY_DELAY_MILLIS)
+                runtimeDelayer.delayMillis(retryDelayMillis)
                 mailbox.send(BindRetryDueCommand(key))
             } catch (failure: CancellationException) {
                 throw failure
@@ -998,6 +1004,7 @@ private class KotlinFrpcRuntimeSession(
         visitor.listenerBound = true
         visitor.boundIdentity = command.key.identity
         visitor.lastFailure = null
+        visitor.bindRetries = 0
         registerListener(owner)
         val acceptJob = launchOwned("KotlinFrpcVisitorAccept") { runAcceptLoop(owner) }
         owner.attach(acceptJob)
@@ -1642,6 +1649,7 @@ private class KotlinFrpcRuntimeSession(
         const val MAXIMUM_VISITORS_PER_SESSION = 32
         const val MAXIMUM_RELAYS_PER_SESSION = 100
         const val VISITOR_BIND_RETRY_DELAY_MILLIS = 10_000L
+        const val MAXIMUM_VISITOR_BIND_RETRY_DELAY_MILLIS = 5 * 60_000L
     }
 }
 
@@ -1767,6 +1775,7 @@ private data class RuntimeVisitor(
     var lastFailure: KotlinFrpcStcpVisitorFailure? = null,
     var listener: RuntimeListenerOwner? = null,
     var bindTask: RuntimeBindTask? = null,
+    var bindRetries: Int = 0,
 ) {
     override fun toString(): String =
         "RuntimeVisitor(config=$config, desiredRevision=$desiredRevision, bindPort=$bindPort, " +

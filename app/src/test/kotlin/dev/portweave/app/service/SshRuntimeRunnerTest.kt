@@ -1,6 +1,9 @@
 package dev.portweave.app.service
 
 import dev.portweave.core.data.repository.ConfigRepository
+import dev.portweave.core.diagnostics.EventRepository
+import dev.portweave.core.diagnostics.TunnelEvent
+import dev.portweave.core.diagnostics.TunnelEventCode
 import dev.portweave.core.model.EndpointSource
 import dev.portweave.core.model.SshAuthMethod
 import dev.portweave.core.model.SshCredentialRefs
@@ -13,6 +16,8 @@ import dev.portweave.core.security.CredentialRef
 import dev.portweave.core.security.CredentialStore
 import dev.portweave.tunnel.engine.BackendAvailability
 import dev.portweave.tunnel.engine.RecoveringBackendHandle
+import dev.portweave.tunnel.engine.RuntimeMode
+import dev.portweave.tunnel.engine.RuntimeWorkPolicy
 import dev.portweave.tunnel.engine.BackendHandle
 import dev.portweave.tunnel.engine.LocalEndpoint
 import dev.portweave.tunnel.engine.TunnelError
@@ -215,6 +220,131 @@ class SshRuntimeRunnerTest {
         runner.stopAll()
     }
 
+    @Test fun backgroundRetriesGoDormantUntilTheAppBecomesVisible() = runTest {
+        val config = runtimeConfig()
+        val backend = FlakyBackend(failures = Int.MAX_VALUE)
+        val states = RuntimeStateStore()
+        val policy = RuntimeWorkPolicy(states.workCounters).apply { interactive.value = false }
+        val runner = SshRuntimeRunner(null, backgroundScope, FakeConfigRepository(config),
+            FakeCredentialStore(), backend, states, networkAvailable = { true },
+            randomDelayMillis = { 0 }, nowMillis = { 0L }, workPolicy = policy)
+        val start = async { runner.startAndAwait(config.id) }
+        advanceTimeBy(60 * 60_000L)
+        runCurrent()
+        // Screen off: ten attempts with growing, grid-aligned waits, then no timer at all.
+        assertEquals(RuntimeMode.SCREEN_OFF.dormantAfterFailures, backend.startCount)
+        val dormant = states.states.value.getValue(config.id) as TunnelState.Reconnecting
+        assertTrue(dormant.dormant)
+        assertEquals(null, dormant.nextRetryAtEpochMillis)
+        advanceTimeBy(24 * 60 * 60_000L)
+        runCurrent()
+        assertEquals(10, backend.startCount)
+        backend.failures = 0
+        policy.visible.value = true
+        runCurrent()
+        assertTrue(start.await())
+        assertEquals(11, backend.startCount)
+        assertTrue(states.states.value[config.id] is TunnelState.Ready)
+        runner.stopAll()
+    }
+
+    @Test fun lossBackoffRestartsFromOneAfterStablePeriodAndKeepsCountingFromThere() = runTest {
+        val config = runtimeConfig()
+        val backend = ControlledBackend()
+        val states = RuntimeStateStore()
+        var now = 1_000_000L
+        val runner = SshRuntimeRunner(null, backgroundScope, FakeConfigRepository(config),
+            FakeCredentialStore(), backend, states, networkAvailable = { true },
+            desiredRoots = { setOf(config.id) }, randomDelayMillis = { it }, nowMillis = { now })
+        assertTrue(runner.startAndAwait(config.id)); runCurrent()
+        fun loseAndObserve(): TunnelState.Reconnecting {
+            backend.handles.getValue(config.id).lost.complete(Unit)
+            runCurrent()
+            return states.states.value.getValue(config.id) as TunnelState.Reconnecting
+        }
+        assertEquals(1, loseAndObserve().attempt)
+        advanceTimeBy(1_000); runCurrent()
+        now += 60_000L
+        assertEquals(2, loseAndObserve().attempt)
+        advanceTimeBy(2_000); runCurrent()
+        now += 5 * 60_000L
+        assertEquals(1, loseAndObserve().attempt)
+        advanceTimeBy(1_000); runCurrent()
+        now += 60_000L
+        // The UI's reconnectCount is a high-water mark; backoff must not inherit it after a reset.
+        assertEquals(2, loseAndObserve().attempt)
+        runner.stopAll()
+    }
+
+    @Test fun networkSwitchReDialsCapableTransportsInPlaceAndRebuildsTheRest() = runTest {
+        val inPlace = runtimeConfig().copy(id = UUID.randomUUID(), localPort = 15501)
+        val rebuilt = runtimeConfig().copy(id = UUID.randomUUID(), localPort = 15502)
+        val backend = ControlledBackend().apply { reconnectableIds += inPlace.id }
+        val network = MutableStateFlow(NetworkStatus(true, 0, networkHandle = 1))
+        val runner = SshRuntimeRunner(null, backgroundScope, FakeConfigRepository(inPlace, rebuilt),
+            FakeCredentialStore(), backend, RuntimeStateStore(), networkAvailable = { true },
+            networkStatus = network, desiredRoots = { setOf(inPlace.id, rebuilt.id) })
+        assertTrue(runner.startAndAwait(inPlace.id))
+        assertTrue(runner.startAndAwait(rebuilt.id))
+        runCurrent()
+        val kept = backend.handles.getValue(inPlace.id)
+        val replaced = backend.handles.getValue(rebuilt.id)
+        runner.onNetworkStatus(NetworkStatus(true, 1, networkHandle = 2))
+        runCurrent()
+        assertEquals(1, kept.transportReconnects)
+        assertTrue(!kept.stopped)
+        assertEquals(1, backend.starts.count { it == inPlace.id })
+        assertTrue(replaced.stopped)
+        assertEquals(2, backend.starts.count { it == rebuilt.id })
+        runner.stopAll()
+    }
+
+    @Test fun validationFlapOnTheSameNetworkKeepsTunnelsRunning() = runTest {
+        val config = runtimeConfig()
+        val backend = ControlledBackend()
+        val states = RuntimeStateStore()
+        val network = MutableStateFlow(NetworkStatus(true, 0, networkHandle = 7))
+        val runner = SshRuntimeRunner(null, backgroundScope, FakeConfigRepository(config),
+            FakeCredentialStore(), backend, states, networkAvailable = { true },
+            networkStatus = network, desiredRoots = { setOf(config.id) })
+        assertTrue(runner.startAndAwait(config.id)); runCurrent()
+        runner.onNetworkStatus(NetworkStatus(false, 1, networkHandle = 7))
+        runner.onNetworkStatus(NetworkStatus(true, 2, networkHandle = 7))
+        runCurrent()
+        assertEquals(1, backend.starts.size)
+        assertTrue(!backend.handles.getValue(config.id).stopped)
+        assertTrue(states.states.value[config.id] is TunnelState.Ready)
+        assertEquals(1L, states.workCounters.snapshot()["networkValidationLost"])
+        // Losing the network itself still blocks the tunnels.
+        runner.onNetworkStatus(NetworkStatus(false, 3, networkHandle = null))
+        assertTrue(states.states.value[config.id] is TunnelState.Blocked)
+        runner.stopAll()
+    }
+
+    @Test fun backgroundEventsAreThrottledPerCodeButVisibleOnesAreNot() = runTest {
+        val config = runtimeConfig()
+        val events = RecordingEvents()
+        val states = RuntimeStateStore()
+        val policy = RuntimeWorkPolicy(states.workCounters)
+        fun runner(backend: SshBackend) = SshRuntimeRunner(null, backgroundScope, FakeConfigRepository(config),
+            FakeCredentialStore(), backend, states, networkAvailable = { true }, eventRepository = events,
+            randomDelayMillis = { 0 }, nowMillis = { 5_000L }, workPolicy = policy)
+        val background = runner(FlakyBackend(failures = 3))
+        assertTrue(background.startAndAwait(config.id))
+        assertEquals(
+            listOf(TunnelEventCode.START_REQUESTED, TunnelEventCode.RETRY_SCHEDULED, TunnelEventCode.TUNNEL_READY),
+            events.recorded.map(TunnelEvent::code),
+        )
+        assertEquals(5L, states.workCounters.snapshot()["suppressedEvents"])
+        background.stopAll()
+        events.recorded.clear()
+        policy.visible.value = true
+        val visible = runner(FlakyBackend(failures = 3))
+        assertTrue(visible.startAndAwait(config.id))
+        assertEquals(8, events.recorded.size)
+        visible.stopAll()
+    }
+
     @Test fun stopDuringRecoveryDelayNeverRestartsTunnel() = runTest {
         val config = runtimeConfig()
         val backend = ControlledBackend()
@@ -404,6 +534,29 @@ class SshRuntimeRunnerTest {
     }
 }
 
+private class FlakyBackend(var failures: Int) : SshBackend {
+    var startCount = 0
+    override suspend fun discoverHostKey(config: TunnelConfig) = DiscoveredHostKey("ssh-rsa", Fingerprint)
+    override suspend fun start(config: TunnelConfig, credentials: SshCredentials): BackendHandle {
+        startCount += 1
+        if (failures > 0) {
+            failures -= 1
+            throw SshBackendException(TunnelError(TunnelErrorCode.CONNECTION_REFUSED, true, "refused"))
+        }
+        return FakeHandle()
+    }
+}
+
+private class RecordingEvents : EventRepository {
+    val recorded = mutableListOf<TunnelEvent>()
+    override fun observeRecent(limit: Int): Flow<List<TunnelEvent>> = MutableStateFlow(recorded.toList())
+    override fun observeForConfig(configId: UUID, limit: Int): Flow<List<TunnelEvent>> = observeRecent(limit)
+    override suspend fun recent(limit: Int): List<TunnelEvent> = recorded.toList()
+    override suspend fun record(event: TunnelEvent) { recorded += event }
+    override suspend fun clear(configId: UUID?) { recorded.clear() }
+    override suspend fun prune(retentionDays: Int) = Unit
+}
+
 private class RetryOnceBackend : SshBackend {
     var startCount = 0
     val handle = FakeHandle()
@@ -499,6 +652,7 @@ private fun runtimeConfig(): TunnelConfig = TunnelConfig.empty(
 private class ControlledBackend : SshBackend {
     val starts = mutableListOf<UUID>()
     val handles = mutableMapOf<UUID, ControlledHandle>()
+    val reconnectableIds = mutableSetOf<UUID>()
     var blockedId: UUID? = null
     var startGate: CompletableDeferred<Unit>? = null
     override suspend fun discoverHostKey(config: TunnelConfig) = DiscoveredHostKey("ssh-rsa", Fingerprint)
@@ -506,14 +660,21 @@ private class ControlledBackend : SshBackend {
         starts += config.id
         if (config.id == blockedId) awaitCancellation()
         startGate?.await()
-        return ControlledHandle(config.localPort).also { handles[config.id] = it }
+        return ControlledHandle(config.localPort, config.id in reconnectableIds).also { handles[config.id] = it }
     }
 }
 
-private class ControlledHandle(port: Int) : BackendHandle, RecoveringBackendHandle {
+private class ControlledHandle(port: Int, private val reconnectable: Boolean = false) :
+    BackendHandle, RecoveringBackendHandle {
     override val availability = MutableStateFlow(BackendAvailability(epoch = 1))
     val lost = CompletableDeferred<Unit>()
     var stopped = false
+    var transportReconnects = 0
+    override suspend fun reconnectTransport(): Boolean {
+        if (!reconnectable) return false
+        transportReconnects += 1
+        return true
+    }
     override val kind = TunnelKind.SSH
     override val localEndpoint = LocalEndpoint("127.0.0.1", port)
     override val isConnected get() = !stopped && !lost.isCompleted

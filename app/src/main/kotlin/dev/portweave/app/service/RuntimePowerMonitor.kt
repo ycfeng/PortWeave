@@ -23,6 +23,7 @@ class RuntimePowerMonitor(private val context: Context, private val policy: Runt
                 addAction(Intent.ACTION_SCREEN_ON)
                 addAction(Intent.ACTION_SCREEN_OFF)
                 addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+                addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
             },
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
@@ -32,6 +33,7 @@ class RuntimePowerMonitor(private val context: Context, private val policy: Runt
     private fun refresh() {
         policy.interactive.value = power.isInteractive
         policy.deviceIdle.value = power.isDeviceIdleMode
+        policy.powerSave.value = power.isPowerSaveMode
     }
 
     override fun close() { context.unregisterReceiver(receiver) }

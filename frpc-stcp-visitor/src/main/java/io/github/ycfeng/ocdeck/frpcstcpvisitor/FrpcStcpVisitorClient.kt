@@ -53,6 +53,16 @@ interface FrpcStcpVisitorNetworkChangeAware {
     suspend fun reconnectAfterDefaultNetworkChange()
 }
 
+/**
+ * Optional host hook that replaces the control connection's built-in reconnect delay, for example to back off
+ * further or to pause entirely while the host app is in the background. Without one, reconnect timing stays
+ * frpc-compatible (1s doubling up to 20s).
+ */
+fun interface FrpcReconnectGate {
+    /** Suspends until reconnect [attempt] (1-based) may start; [defaultDelayMillis] is the built-in delay. */
+    suspend fun awaitReconnect(attempt: Int, defaultDelayMillis: Long)
+}
+
 /** Optional aggregate diagnostics used only by bounded backend lifecycle evidence. */
 interface FrpcStcpVisitorRuntimeDiagnostics {
     suspend fun captureRuntimeDiagnostics(): FrpcRuntimeDiagnostics

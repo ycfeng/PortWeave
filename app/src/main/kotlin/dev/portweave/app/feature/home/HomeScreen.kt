@@ -225,7 +225,11 @@ private fun ConfigCard(
         is TunnelState.WaitingDependency -> "等待依赖就绪" to PortWeaveThemeTokens.status.warning
         is TunnelState.Starting -> "正在连接" to PortWeaveThemeTokens.status.warning
         is TunnelState.Ready -> "已就绪" to PortWeaveThemeTokens.status.success
-        is TunnelState.Reconnecting -> "正在重连 · ${state.attempt}" to PortWeaveThemeTokens.status.warning
+        is TunnelState.Reconnecting -> if (state.dormant) {
+            "暂停重连 · 网络变化或打开应用后继续" to PortWeaveThemeTokens.status.warning
+        } else {
+            "正在重连 · ${state.attempt}" to PortWeaveThemeTokens.status.warning
+        }
         is TunnelState.Blocked -> "等待处理" to PortWeaveThemeTokens.status.warning
         TunnelState.Stopping -> "正在停止" to PortWeaveThemeTokens.status.warning
         is TunnelState.Failed -> tunnelErrorPresentation(state.error).title to MaterialTheme.colorScheme.error

@@ -211,6 +211,17 @@ override suspend fun awaitConnectionLost() {
 
 **收益**：后台检测唤醒从约 7,200 次/小时降到约 60 次/小时（只剩兜底）。断线发现从“最多 500ms 或 5s”变为**即时**。
 
+**实现说明（阶段二，已完成）**：
+
+- 核对 `jsch-2.28.3` 源码后做了简化：会话的所有结束路径（读循环 EOF 或 IOException、保活次数用尽、主动 `disconnect()`）都会进入 `Session.disconnect()`，它先把 `isConnected` 置为 false，再关闭 socket。所以只在 `Socket.close()` 上发信号就足够，**不需要再包装 InputStream**。见 `tunnel-engine/.../ssh/DisconnectAwareSocketFactory.kt`。
+- 只有 TCP 建连成功后才会发信号。建连失败直接抛异常；JSch 会包装成 `JSchException("Session.connect: …", cause)`，原始异常保留在 cause 中，所以 `mapFailure` 的错误映射（DNS、拒绝连接、超时）不受影响。
+- 安装 factory 后，JSch 不再负责连接超时，改由 `JschSessionHandle.connect()` 把 `connectTimeoutSeconds` 传给 factory。
+- 顺带修复了一个问题：在 TCP 建连阶段 `Session.disconnect()` 什么也不做，所以以前在建连阶段取消启动，要等连接超时才会真正结束。现在 `disconnect()` 会额外调用 `factory.abort()`，立即关闭 socket。
+- 兜底检查改为 60s 一次。没有信号的会话（例如测试用的 fake）仍然走阶段一的分档轮询。
+- 测试：
+  - `DisconnectAwareSocketFactoryTest`：关闭 socket 时发信号、建连失败不发信号、`abort()`、兜底计数。
+  - `SshTunnelIntegrationTest.serverSideDisconnectIsReportedImmediatelyWithoutPolling`：用真实 sshd 从服务端断开会话，2s 内感知，期间只检查 1 次。按旧逻辑，后台空闲时最多要 30s。
+
 ---
 
 ### 4.2 【P0】按档位分级的重连策略，加入“休眠等待”
@@ -259,6 +270,23 @@ override suspend fun awaitConnectionLost() {
 
 **收益**：服务端不可达、熄屏 2 小时的场景下，握手次数从约 600 次（两层合计）降到首小时 ≤15 次，之后基本为 0。
 
+**实现说明（阶段二，已完成）**：
+
+- **档位与退避**：`RuntimeMode`（`tunnel-engine/.../RuntimeWorkPolicy.kt`）按上表实现。系统省电模式归入 `SCREEN_OFF`。`DEVICE_IDLE` 下第一次失败就进入休眠。
+  - `retryDelay()` 的上限取 `min(档位上限, 1s × 2^(n-1))`。
+  - 前台保留全抖动。
+  - 后台只要上限达到 30s，就不再抖动，直接取上限并**向上对齐到 30s 网格**（对应 §4.2-6 的批量对齐），这样多条隧道会在同一个时刻重试。30s 以内的短等待仍然抖动。
+- **休眠与提前唤醒**：`awaitRetry()` 替换了 runner 里所有裸 `delay`。
+  - 休眠等待只有触发器能结束：界面可见、亮屏、退出 Doze、真实的网络变化。
+  - 定时等待在两种情况下提前结束：网络变化；或者切换到的新档位上限小于当前等待时长（对应 §4.2-3）。
+  - 用户点“立即重试”和网络变化，仍然走原有的“取消后重新恢复”路径。
+- **状态展示**：休眠时状态是 `TunnelState.Reconnecting(dormant = true)`。首页和详情页显示“暂停重连 · 网络变化或打开应用后继续”。日志的 messageKey 为 `retry_dormant`。
+- **修复：退避次数来源**：断线后的退避次数以前取自 `RuntimeSnapshot.reconnectCount`，它是 UI 用的历史最大值。所以阶段一的“稳定 5 分钟后重置”只能撑过一次断线，下一次又会从历史最大值接着算。现在每条隧道单独记录“连续断线次数”，停止隧道时清零。见测试 `lossBackoffRestartsFromOneAfterStablePeriodAndKeepsCountingFromThere`。
+- **STCP 内层重试**：`FrpcSessionConfig` 带 `@Serializable`，不能挂回调。所以改为新增公开的 `FrpcReconnectGate` 接口，通过 `KotlinFrpcStcpVisitorClient(context, gate)` 注入，再经 `FrpControlConfig.reconnectGate` 接管 `FrpControlClient` 的重连等待。
+  - 不注入时（默认为 null）保持 frpc 原有时序。`MAXIMUM_RECONNECT_DELAY_MILLIS` 的校验没有改动。
+  - 引擎侧的 `awaitTransportReconnect()`：前台沿用库自带的延迟，后台按档位退避并支持休眠。
+- **未做**：§4.2-4 后半段“按每小时断线次数升档”。这一项与自适应心跳关系更紧，并入阶段三。
+
 ---
 
 ### 4.3 【P0】网络变化去抖，并区分“换网”和“抖动”
@@ -293,6 +321,23 @@ override suspend fun awaitConnectionLost() {
    | 从可用变为不可用 | 维持现有逻辑：标记为 `Blocked(NETWORK_UNAVAILABLE)`，挂起等待 |
 
 **收益**：每次 Wi-Fi 与蜂窝之间的切换，每条隧道最多重建一次。STCP 不再反复解绑和重绑本地端口，同网抖动不再触发重建。
+
+**实现说明（阶段二，已完成）**：
+
+- `NetworkStatus` 新增 `networkHandle` 字段。服务端对网络状态做 2s 去抖（`NetworkSettleMillis`）。
+- 去重没有用 `distinctUntilChanged`。runner 把新状态与“当前隧道所基于的网络”（`settledNetwork`）比较，而不是与上一条原始状态比较。这样，去抖窗口内来回跳一次的状态不会被误判为网络变化。
+- 按情况处理：
+
+  | 情况 | 处理 |
+  |---|---|
+  | `available` 和 handle 都没变 | 什么都不做。如果之前处于“同网受限”，则唤醒等待中的重试 |
+  | 同一 handle 上失去 VALIDATED | 不拆连接，只记 `networkValidationLost` 计数 |
+  | 在两个可用网络之间切换 | 对直连远端、支持就地重连的 handle 调用 `reconnectTransport()`（STCP 且 `autoRecover`，15s 超时），其余重建。就地重连节点的下游，由已有的 epoch 机制重建 |
+  | 其他情况 | 保持原逻辑 |
+
+- 测试：
+  - `networkSwitchReDialsCapableTransportsInPlaceAndRebuildsTheRest`
+  - `validationFlapOnTheSameNetworkKeepsTunnelsRunning`
 
 ---
 
@@ -358,6 +403,17 @@ notificationJob = scope.launch(Dispatchers.Main.immediate) {
 
 3. **`HomeViewModel.init`**：这里的 `combine(...).collect` 常驻在 `viewModelScope` 中。可以在 `visible == false` 时用 `flatMapLatest` 切到 `emptyFlow()`。成本很低，可以顺手改。
 
+**实现说明（阶段二）**：
+
+- 第 1 项已完成，没有做内存缓冲批量写入。`ERROR` 级别和 `FAILED`、`STOPPED` 事件始终写入。
+- 第 2 项已完成：
+  - 后台**完全没有指标定时器**，回到前台或会话关闭时补发一次。
+  - 前台每秒合并发布一次。
+  - 连接数变化仍然立即发布。
+- 第 3 项**没有做**，原因有两点：
+  - 这个收集器只在状态变化时运行，没有定时器，实际节省的开销可以忽略。
+  - 现有 `HomeViewModelPowerTest` 要求界面隐藏期间隧道重启后，过期的协议标记也要被清除；改成切到 `emptyFlow()` 会破坏这一点。
+
 ---
 
 ### 4.7 【P1】端口占用重试设置上限
@@ -366,6 +422,11 @@ notificationJob = scope.launch(Dispatchers.Main.immediate) {
 
 - 指数退避：10s、20s、40s……最长 5 分钟。
 - 后台连续失败 N 次后转为 `Failed(PORT_IN_USE)`，等待用户操作。界面回到前台时自动再试一次。
+
+**实现说明（阶段二，已完成）**：
+
+- 第一条已实现：第一次仍然等 10s（所以现有测试不受影响），之后翻倍，最长 5 分钟；绑定成功后重新从 10s 开始。
+- 第二条不需要在库里实现：引擎把 visitor 的 `failed` 状态视为连接丢失，随后由 runner 按 §4.2 的档位退避和休眠处理；启动阶段的端口冲突同样由 runner 按档位重试。
 
 ---
 
@@ -438,10 +499,12 @@ notificationJob = scope.launch(Dispatchers.Main.immediate) {
 |---|---|
 | `sshStateChecks` | 断线检测次数（已有） |
 | `sshMetricsPublications`、`notificationUpdates`、`recoveries`、`backendStarts` | 已有 |
-| `retryAttempts.<mode>` | **新增**：各档位下的重试次数 |
-| `dormantEntries` | **新增**：进入休眠的次数 |
-| `keepAliveSent` | **新增**：主动发出的保活次数 |
-| `suppressedEvents` | **新增**：后台被抑制、没有写库的日志条数 |
+| `dormantRetryWaits` | **新增（阶段二）**：进入休眠等待的次数 |
+| `transportReconnectWaits` | **新增（阶段二）**：STCP 控制连接在后台按档位等待重连的次数 |
+| `stcpTransportReconnects` | **新增（阶段二）**：换网时 STCP 就地重连传输层的次数 |
+| `networkValidationLost` | **新增（阶段二）**：同一网络失去 VALIDATED、但没有拆隧道的次数 |
+| `suppressedEvents` | **新增（阶段二）**：后台被抑制、没有写库的日志条数 |
+| `keepAliveSent` | 计划（阶段三）：主动发出的保活次数 |
 
 ### 6.2 系统工具
 
@@ -483,7 +546,7 @@ S7 是最终验收标准。S1–S6 是可以在 CI 或本地重复执行的代�
 | 阶段 | 内容 | 改动量 | 涉及模块 |
 |---|---|---|---|
 | 阶段一：止血（**代码已完成，编译与单测通过，待真机验证**） | §4.1-A 检测频率改为按可见性<br>§4.5 熄屏时不刷新通知，后台最短间隔 10s，加 `setOnlyAlertOnce`<br>§4.2-4 稳定判定改为 5 分钟 | 小 | `tunnel-engine`、`app` |
-| 阶段二：主体 | §4.0 运行档位<br>§4.1-B 事件驱动的断线检测<br>§4.2 分档重连与休眠<br>§4.3 网络去抖<br>§4.6 日志与指标降频<br>§4.7 端口重试上限 | 中 | `tunnel-engine`、`app`、`frpc-stcp-visitor`（只加注入点） |
+| 阶段二：主体（**代码已完成，编译与单测通过，待真机验证**） | §4.0 运行档位<br>§4.1-B 事件驱动的断线检测<br>§4.2 分档重连与休眠<br>§4.3 网络去抖<br>§4.6 日志与指标降频<br>§4.7 端口重试上限 | 中 | `tunnel-engine`、`app`、`frpc-stcp-visitor`（只加注入点） |
 | 阶段三：深度优化 | §4.4 自适应心跳和 `HeartbeatCoordinator`<br>§4.8 空闲断开<br>§4.9 白名单引导<br>§5 帮助文档 | 大 | 全部模块 |
 
 每个阶段必须通过的回归测试：
@@ -507,7 +570,7 @@ S7 是最终验收标准。S1–S6 是可以在 CI 或本地重复执行的代�
 | 心跳拉长后被 NAT 回收，触发更贵的重连 | 智能心跳逐级上探，断线即回退，按网络记住安全值，上限 4–5 分钟 |
 | 休眠导致用户切回应用时发现没有连上 | 回到前台立即重试。通知文案明确写“等待网络或回到前台后重试”，用户也可以随时点“立即重试” |
 | 修改 `frpc-stcp-visitor` 可能破坏与 Go 版 frpc 的行为一致性 | 只加可选注入点，默认值保持不变，interop 测试继续用默认配置 |
-| 自定义 JSch `SocketFactory` 会改变连接超时和路由行为 | 自行实现超时，与现有 `connectTimeoutSeconds` 对齐。加集成测试，覆盖 DNS 失败、拒绝连接、超时三种情况的错误映射 |
+| 自定义 JSch `SocketFactory` 会改变连接超时和路由行为 | 已自行实现超时，与 `connectTimeoutSeconds` 对齐。建连失败的原始异常仍保留在 cause 中，错误映射不变；已有集成测试全部通过，并新增服务端断开的集成测试 |
 | ROM 检测规则不公开，可能仍然触发提示 | §4.9 白名单引导兜底，并在 S7 真机长测中持续回归 |
 
 ---

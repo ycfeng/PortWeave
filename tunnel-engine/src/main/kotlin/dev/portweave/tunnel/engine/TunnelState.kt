@@ -18,7 +18,8 @@ sealed interface TunnelState {
     data class WaitingDependency(val parentId: java.util.UUID) : TunnelState
     data class Starting(val stage: StartStage) : TunnelState
     data class Ready(val sinceEpochMillis: Long) : TunnelState
-    data class Reconnecting(val attempt: Int, val nextRetryAtEpochMillis: Long?) : TunnelState
+    /** [dormant]: no retry timer is scheduled; the next attempt waits for a network change or the app returning. */
+    data class Reconnecting(val attempt: Int, val nextRetryAtEpochMillis: Long?, val dormant: Boolean = false) : TunnelState
     data object Stopping : TunnelState
     data class Blocked(val reason: BlockReason) : TunnelState
     data class Failed(val error: TunnelError) : TunnelState

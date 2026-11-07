@@ -29,8 +29,14 @@ internal class SshMetricsTracker(
     private var closed = false
     private val publisher = scope.launch {
         for (signal in dirty) {
-            val visible = policy.visible.value
-            withTimeoutOrNull(policy.metricsInterval()) { policy.visible.first { it != visible } }
+            if (policy.visible.value) {
+                // Visible: coalesce traffic into one update per interval, flushing at once if the UI goes away.
+                withTimeoutOrNull(VisiblePublishMillis) { policy.visible.first { !it } }
+            } else {
+                // Background: nobody reads byte counters, so no timer at all. They stay exact in the atomics and are
+                // published when the UI comes back or the session closes; connection counts still publish at once.
+                policy.visible.first { it }
+            }
             synchronized(this@SshMetricsTracker) {
                 dirty.tryReceive()
                 if (!closed) publish()
@@ -83,5 +89,9 @@ internal class SshMetricsTracker(
         publish()
         dirty.close()
         publisher.cancel()
+    }
+
+    private companion object {
+        const val VisiblePublishMillis = 1_000L
     }
 }

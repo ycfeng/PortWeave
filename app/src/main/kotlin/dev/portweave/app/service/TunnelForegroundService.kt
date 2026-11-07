@@ -19,6 +19,7 @@ import dev.portweave.tunnel.engine.orchestration.StartLease
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -26,6 +27,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
@@ -34,6 +36,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
+@OptIn(FlowPreview::class)
 class TunnelForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var runner: SshRuntimeRunner
@@ -61,9 +64,11 @@ class TunnelForegroundService : Service() {
             eventRepository = container.eventRepository,
             desiredRoots = container.desiredRuntimeStore::snapshot,
             networkStatus = networkMonitor.status,
+            workPolicy = container.workPolicy,
         )
         networkJob = scope.launch {
-            networkMonitor.status.drop(1).collectLatest(runner::onNetworkStatus)
+            // A Wi-Fi/cellular handover fires several callbacks within a second or two; act once it has settled.
+            networkMonitor.status.drop(1).debounce(NetworkSettleMillis).collectLatest(runner::onNetworkStatus)
         }
         scope.launch {
             container.eventRepository.prune(container.settingsStore.settings.first().logRetentionDays)
@@ -251,6 +256,7 @@ class TunnelForegroundService : Service() {
         private const val ChannelId = "port_mappings"
         private const val NotificationId = 1001
         private const val BackgroundNotificationIntervalMillis = 10_000L
+        private const val NetworkSettleMillis = 2_000L
 
         fun start(context: Context, configId: UUID) {
             val intent = Intent(context, TunnelForegroundService::class.java)

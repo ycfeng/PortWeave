@@ -1,5 +1,6 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime
 
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcReconnectGate
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcSessionConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorFailure
@@ -90,6 +91,7 @@ internal fun interface FrpSessionControlFactory {
 
 internal class ProductionFrpSessionControlFactory(
     private val routeProvider: TcpDialRouteProvider? = null,
+    private val reconnectGate: FrpcReconnectGate? = null,
 ) : FrpSessionControlFactory {
     override fun create(
         config: FrpcSessionConfig,
@@ -114,7 +116,7 @@ internal class ProductionFrpSessionControlFactory(
         )
         return FrpControlAdapter(
             FrpControlClient(
-                config = productionFrpControlConfig(config, wireProtocol),
+                config = productionFrpControlConfig(config, wireProtocol, reconnectGate),
                 connector = connector,
                 parentScope = parentScope,
                 generation = generation,
@@ -127,10 +129,12 @@ internal class ProductionFrpSessionControlFactory(
 internal fun productionFrpControlConfig(
     config: FrpcSessionConfig,
     wireProtocol: FrpWireProtocol,
+    reconnectGate: FrpcReconnectGate? = null,
 ): FrpControlConfig = FrpControlConfig(
     token = config.authToken,
     user = config.user.orEmpty(),
     wireProtocol = wireProtocol,
+    reconnectGate = reconnectGate,
 )
 
 private class FrpControlAdapter(

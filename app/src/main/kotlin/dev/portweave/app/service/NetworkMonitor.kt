@@ -9,13 +9,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-data class NetworkStatus(val available: Boolean, val generation: Long)
+/**
+ * [available] requires a validated default network. [networkHandle] identifies that network, which tells a real
+ * switch (new handle) apart from validation flapping on the network the tunnels already use (same handle).
+ */
+data class NetworkStatus(val available: Boolean, val generation: Long, val networkHandle: Long? = null)
 
 class NetworkMonitor(context: Context) : AutoCloseable {
     private val manager = context.getSystemService(ConnectivityManager::class.java)
     private val generation = AtomicLong()
-    private val mutableStatus = MutableStateFlow(NetworkStatus(currentAvailable(), 0))
     @Volatile private var lastNetwork: Network? = manager.activeNetwork
+    private val mutableStatus = MutableStateFlow(NetworkStatus(currentAvailable(), 0, lastNetwork?.networkHandle))
     val status: StateFlow<NetworkStatus> = mutableStatus.asStateFlow()
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
@@ -40,7 +44,7 @@ class NetworkMonitor(context: Context) : AutoCloseable {
         val previous = mutableStatus.value
         if (previous.available == available && lastNetwork == network) return
         lastNetwork = network
-        mutableStatus.value = NetworkStatus(available, generation.incrementAndGet())
+        mutableStatus.value = NetworkStatus(available, generation.incrementAndGet(), network?.networkHandle)
     }
 
     override fun close() {

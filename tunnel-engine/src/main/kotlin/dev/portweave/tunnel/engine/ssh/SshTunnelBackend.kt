@@ -34,11 +34,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -264,14 +266,24 @@ class SshBackendHandle internal constructor(
     override val metrics: StateFlow<BackendMetrics> get() = session.metrics
 
     override suspend fun awaitConnectionLost() {
-        while (session.isConnected) {
+        val lost = session.connectionLost
+        while (session.isConnected && lost?.isCompleted != true) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             workPolicy.counters.increment("sshStateChecks")
-            workPolicy.awaitNextCheck(metrics)
+            if (lost == null) {
+                workPolicy.awaitNextCheck(metrics)
+            } else {
+                // Event-driven: the socket reports its own close. The rare timeout only guards a missed signal.
+                withTimeoutOrNull(SafetyCheckMillis) { lost.await() }
+            }
         }
     }
 
     override suspend fun stop() = withContext(NonCancellable + Dispatchers.IO) { session.disconnectSafely() }
+
+    private companion object {
+        const val SafetyCheckMillis = 60_000L
+    }
 }
 
 internal interface SshSessionFactory {
@@ -282,6 +294,8 @@ internal interface SshSessionHandle {
     val isConnected: Boolean
     val capabilities: BackendCapabilities get() = BackendCapabilities()
     val metrics: StateFlow<BackendMetrics> get() = kotlinx.coroutines.flow.MutableStateFlow(BackendMetrics())
+    /** Completes when the established connection ends; null makes [SshBackendHandle] fall back to polling. */
+    val connectionLost: Deferred<Unit>? get() = null
     fun setHostKeyRepository(repository: HostKeyRepository)
     fun setConfig(key: String, value: String)
     fun setServerAliveInterval(intervalMillis: Int)
@@ -305,7 +319,9 @@ private object JschSessionFactory : SshSessionFactory {
 private class JschSessionHandle(private val jsch: JSch, private val session: Session) : SshSessionHandle {
     private val forwarders = ConcurrentHashMap.newKeySet<LoopbackForwarder>()
     private val metricsTracker = SshMetricsTracker()
+    private val socketFactory = DisconnectAwareSocketFactory().also(session::setSocketFactory)
     override val isConnected: Boolean get() = session.isConnected
+    override val connectionLost: Deferred<Unit> get() = socketFactory.connectionLost
     override val capabilities = BackendCapabilities(byteCounters = true, activeConnectionCount = true)
     override val metrics: StateFlow<BackendMetrics> = metricsTracker.metrics
     override fun setHostKeyRepository(repository: HostKeyRepository) {
@@ -350,7 +366,10 @@ private class JschSessionHandle(private val jsch: JSch, private val session: Ses
         }
     }
     override fun setPassword(password: ByteArray) = session.setPassword(password)
-    override fun connect(timeoutMillis: Int) = session.connect(timeoutMillis)
+    override fun connect(timeoutMillis: Int) {
+        socketFactory.connectTimeoutMillis = timeoutMillis
+        session.connect(timeoutMillis)
+    }
     override fun setPortForwardingL(
         bindAddress: String,
         localPort: Int,
@@ -375,6 +394,7 @@ private class JschSessionHandle(private val jsch: JSch, private val session: Ses
         try {
             session.disconnect()
         } finally {
+            socketFactory.abort()
             jsch.removeAllIdentity()
             metricsTracker.close()
         }

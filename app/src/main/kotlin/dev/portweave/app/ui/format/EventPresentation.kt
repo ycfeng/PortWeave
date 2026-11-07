@@ -27,7 +27,8 @@ fun eventDescription(code: String, messageKey: String = ""): String? = when (cod
     TunnelEventCode.LISTENER_BOUND -> "本地端口已成功绑定"
     TunnelEventCode.TUNNEL_READY -> "本地映射现在可以使用"
     TunnelEventCode.NETWORK_CHANGED -> "将根据连接状态自动恢复"
-    TunnelEventCode.RETRY_SCHEDULED -> "系统将在稍后再次连接"
+    TunnelEventCode.RETRY_SCHEDULED ->
+        if (messageKey == "retry_dormant") "后台已暂停重试，网络变化或打开应用后继续" else "系统将在稍后再次连接"
     TunnelEventCode.STOP_REQUESTED -> "正在安全关闭连接"
     TunnelEventCode.STOPPED -> "连接和本地端口已释放"
     TunnelEventCode.FAILED -> sshFailureDescription(messageKey) ?: "请查看技术信息或导出日志排查"

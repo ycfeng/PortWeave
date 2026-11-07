@@ -10,6 +10,7 @@ import dev.portweave.core.diagnostics.TunnelEvent
 import dev.portweave.core.diagnostics.TunnelEventCode
 import dev.portweave.core.model.DependencyGraph
 import dev.portweave.core.model.DependencyGraphException
+import dev.portweave.core.model.EndpointSource
 import dev.portweave.core.model.SshAuthMethod
 import dev.portweave.core.model.TunnelConfig
 import dev.portweave.core.model.TunnelSpec
@@ -17,6 +18,7 @@ import dev.portweave.core.security.CredentialStore
 import dev.portweave.core.security.CredentialUnavailableException
 import dev.portweave.tunnel.engine.BackendHandle
 import dev.portweave.tunnel.engine.BlockReason
+import dev.portweave.tunnel.engine.RuntimeWorkPolicy
 import dev.portweave.tunnel.engine.StartStage
 import dev.portweave.tunnel.engine.TunnelError
 import dev.portweave.tunnel.engine.TunnelErrorCode
@@ -32,7 +34,6 @@ import dev.portweave.tunnel.engine.stcp.FrpcStcpBackend
 import dev.portweave.tunnel.engine.stcp.StcpBackendException
 import dev.portweave.tunnel.engine.stcp.StcpCredentials
 import java.util.UUID
-import kotlin.math.min
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -53,6 +54,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** App adapter around the dependency-aware engine orchestrator. */
 class SshRuntimeRunner(
@@ -69,6 +71,7 @@ class SshRuntimeRunner(
     private val eventRepository: EventRepository? = null,
     private val desiredRoots: suspend () -> Set<UUID> = { emptySet() },
     private val nowMillis: () -> Long = System::currentTimeMillis,
+    private val workPolicy: RuntimeWorkPolicy = RuntimeWorkPolicy(stateStore.workCounters),
 ) {
     private val networkAvailableCheck = networkAvailable ?: {
         val manager = requireNotNull(context).getSystemService(ConnectivityManager::class.java)
@@ -86,6 +89,12 @@ class SshRuntimeRunner(
     val workCounters = stateStore.workCounters
     private val recoveryMutex = Mutex()
     private val stopVersions = ConcurrentHashMap<UUID, Long>()
+    /** Consecutive losses of a started tunnel; reset once a connection stays up for [StableConnectionMillis]. */
+    private val lossStreaks = ConcurrentHashMap<UUID, Int>()
+    private val lastRecordedAt = ConcurrentHashMap<Pair<UUID, String>, Long>()
+    /** The network the running tunnels were last (re)built for. */
+    @Volatile private var settledNetwork: NetworkStatus? = networkStatus?.value
+    @Volatile private var networkLimited = false
 
     fun start(configId: UUID) {
         scope.launch { startAndAwait(configId) }
@@ -138,11 +147,16 @@ class SshRuntimeRunner(
                             (backendFailure?.failedConfigId?.let { repository.find(it) }?.autoRecover != false)
                         if (!retry) { publishRejection(configId, result.cause); return false }
                         attempt++
-                        val cap = min(60_000L, 1_000L shl min(attempt - 1, 15))
-                        val wait = randomDelayMillis(cap).coerceIn(0, cap)
-                        stateStore.update(configId, TunnelState.Reconnecting(attempt, nowMillis() + wait))
-                        record(configId, 0, EventLevel.WARNING, TunnelEventCode.RETRY_SCHEDULED, "retry_scheduled")
-                        delay(wait)
+                        val wait = workPolicy.retryDelay(attempt, nowMillis(), randomDelayMillis)
+                        stateStore.update(
+                            configId,
+                            TunnelState.Reconnecting(attempt, wait?.let { nowMillis() + it }, dormant = wait == null),
+                        )
+                        record(
+                            configId, 0, EventLevel.WARNING, TunnelEventCode.RETRY_SCHEDULED,
+                            if (wait == null) "retry_dormant" else "retry_scheduled",
+                        )
+                        workPolicy.awaitRetry(wait)
                     }
                 }
             }
@@ -177,6 +191,7 @@ class SshRuntimeRunner(
 
     suspend fun stop(configId: UUID) {
         stopVersions.merge(configId, 1L, Long::plus)
+        lossStreaks.remove(configId)
         cancelOperations(setOf(configId))
         record(configId, 0, EventLevel.INFO, TunnelEventCode.STOP_REQUESTED, "stop_requested")
         stateStore.update(configId, TunnelState.Stopping)
@@ -196,6 +211,7 @@ class SshRuntimeRunner(
         val graph = DependencyGraph(snapshot)
         val affected = graph.transitiveDependents(configId).map(TunnelConfig::id) + configId
         affected.forEach { stopVersions.merge(it, 1L, Long::plus) }
+        affected.forEach { lossStreaks.remove(it) }
         cancelOperations(affected.toSet())
         affected.forEach { stateStore.update(it, TunnelState.Stopping) }
         affected.forEach { watcherJobs.remove(it)?.cancel() }
@@ -209,6 +225,7 @@ class SshRuntimeRunner(
 
     suspend fun stopAll() {
         (operationIds() + desiredRoots()).forEach { stopVersions.merge(it, 1L, Long::plus) }
+        lossStreaks.clear()
         cancelOperations(operationIds() + recoveryJobs.keys.toSet())
         val active = orchestrator.activeIds() + operationIds() + stateStore.states.value.keys
         active.forEach { stateStore.update(it, TunnelState.Stopping) }
@@ -218,7 +235,29 @@ class SshRuntimeRunner(
         watcherJobs.clear()
     }
 
+    /** Expects settled (debounced) statuses; see [TunnelForegroundService]. */
     suspend fun onNetworkStatus(status: NetworkStatus) {
+        val previous = settledNetwork
+        if (previous != null && previous.available == status.available && previous.networkHandle == status.networkHandle) {
+            // Back on the network the tunnels were built for, e.g. validation flapped. Nothing to rebuild, but
+            // anything that failed while the network was limited may retry now.
+            if (networkLimited) {
+                networkLimited = false
+                workPolicy.onNetworkChanged()
+            }
+            return
+        }
+        if (previous?.available == true && !status.available &&
+            status.networkHandle != null && status.networkHandle == previous.networkHandle
+        ) {
+            // Validation dropped on the same network. Tearing tunnels down here would rebuild them on every flap;
+            // their keepalives decide whether they actually survive.
+            networkLimited = true
+            workCounters.increment("networkValidationLost")
+            return
+        }
+        networkLimited = false
+        settledNetwork = status
         cancelOperations(operationIds() + recoveryJobs.keys.toSet())
         val active = orchestrator.activeIds()
         val affected = active + desiredRoots()
@@ -227,7 +266,32 @@ class SshRuntimeRunner(
         affected.forEach { id ->
             record(id, status.generation, EventLevel.WARNING, TunnelEventCode.NETWORK_CHANGED, "network_changed")
         }
-        recover(status.available, "network_changed")
+        // Switching between two usable networks: transports that can re-dial in place keep their local listeners.
+        val preserved = if (previous?.available == true && status.available) reconnectTransportsInPlace() else emptySet()
+        workPolicy.onNetworkChanged()
+        recover(status.available, "network_changed", preserve = preserved)
+    }
+
+    /** Asks every active, directly remote, recoverable transport to re-dial; returns the ones that did. */
+    private suspend fun reconnectTransportsInPlace(): Set<UUID> {
+        val configs = repository.snapshot().associateBy(TunnelConfig::id)
+        val candidates = orchestrator.activeIds().mapNotNull { id ->
+            val directlyRemote = when (val spec = configs[id]?.spec) {
+                is TunnelSpec.Ssh -> spec.endpoint is EndpointSource.Remote
+                is TunnelSpec.Stcp -> spec.endpoint is EndpointSource.Remote
+                null -> false
+            }
+            val handle = orchestrator.generation(id)?.let { orchestrator.handle(id, it) } as? RecoveringBackendHandle
+            if (directlyRemote && handle != null) id to handle else null
+        }
+        if (candidates.isEmpty()) return emptySet()
+        return coroutineScope {
+            candidates.map { (id, handle) ->
+                async {
+                    id.takeIf { withTimeoutOrNull(TransportReconnectTimeoutMillis) { handle.reconnectTransport() } == true }
+                }
+            }.awaitAll().filterNotNull().toSet()
+        }
     }
 
     suspend fun restoreDesired(): Set<UUID> {
@@ -374,12 +438,17 @@ class SshRuntimeRunner(
                     if (config?.autoRecover == true && handle.failure?.retryable != false) {
                         val runtime = stateStore.runtime.value[configId]
                         val stable = runtime?.lastReadyAtEpochMillis?.let { nowMillis() - it >= StableConnectionMillis } == true
-                        val attempt = if (stable) 1 else snapshotAttempt(configId) + 1
-                        val cap = min(60_000L, 1_000L shl min(attempt - 1, 15))
-                        val wait = if (networkAvailableCheck()) randomDelayMillis(cap).coerceIn(0, cap) else 0L
+                        val attempt = checkNotNull(
+                            lossStreaks.compute(configId) { _, previous -> if (stable) 1 else (previous ?: 0) + 1 },
+                        )
+                        val wait = if (networkAvailableCheck()) workPolicy.retryDelay(attempt, nowMillis(), randomDelayMillis) else 0L
                         stateStore.update(
                             configId,
-                            TunnelState.Reconnecting(attempt, wait.takeIf { it > 0 }?.let { nowMillis() + it }),
+                            TunnelState.Reconnecting(
+                                attempt,
+                                wait?.takeIf { it > 0 }?.let { nowMillis() + it },
+                                dormant = wait == null,
+                            ),
                         )
                         scheduleRecovery(configId, generation, wait)
                     } else {
@@ -404,8 +473,6 @@ class SshRuntimeRunner(
         }
     }
 
-    private fun snapshotAttempt(configId: UUID): Int = stateStore.runtime.value[configId]?.reconnectCount ?: 0
-
     suspend fun shutdown() {
         cancelOperations(operationIds() + recoveryJobs.keys.toSet())
         watcherJobs.values.forEach(Job::cancel)
@@ -415,10 +482,11 @@ class SshRuntimeRunner(
         owned.forEach { (id, generation) -> stateStore.updateIfGeneration(id, generation, TunnelState.Stopped) }
     }
 
-    private fun scheduleRecovery(configId: UUID, generation: Long, wait: Long, descendantsOnly: Boolean = false) {
+    /** [wait] comes from [RuntimeWorkPolicy.retryDelay]; null waits dormant for a wake trigger. */
+    private fun scheduleRecovery(configId: UUID, generation: Long, wait: Long?, descendantsOnly: Boolean = false) {
         workCounters.increment("recoveryRequests")
         val task = scope.launch(start = CoroutineStart.LAZY) {
-            if (wait > 0) delay(wait)
+            workPolicy.awaitRetry(wait)
             recover(networkAvailableCheck(), "connection_lost", configId, generation, descendantsOnly)
         }
         recoveryJobs.put(configId, task)?.cancel()
@@ -432,6 +500,7 @@ class SshRuntimeRunner(
         failedId: UUID? = null,
         generation: Long? = null,
         descendantsOnly: Boolean = false,
+        preserve: Set<UUID> = emptySet(),
     ): Set<UUID> {
         if (failedId == null) cancelOperations(operationIds() + recoveryJobs.keys.toSet())
         val rootVersions = mutableMapOf<UUID, Long>()
@@ -443,11 +512,17 @@ class SshRuntimeRunner(
             }.getOrDefault(false)) return@withLock emptySet<UUID>()
             val roots = desiredRoots()
             if (roots.isEmpty()) return@withLock emptySet<UUID>()
-            val affected = if (failedId == null) orchestrator.activeIds() else
+            val activeBefore = orchestrator.activeIds()
+            // Preserved transports re-dial in place; tunnels running through them are rebuilt by the epoch change.
+            val kept = preserve + preserve.flatMap { id ->
+                runCatching { graph.transitiveDependents(id).map { it.id } }.getOrDefault(emptyList())
+            }
+            val affected = if (failedId == null) activeBefore - kept else
                 graph.transitiveDependents(failedId).map { it.id }.toSet() +
                     if (descendantsOnly) emptySet() else setOf(failedId)
             val selected = roots.filterTo(mutableSetOf()) { root ->
-                failedId == null || runCatching { graph.resolve(root).any { it.id in affected } }.getOrDefault(false)
+                failedId == null && (kept.isEmpty() || root !in activeBefore) ||
+                    runCatching { graph.resolve(root).any { it.id in affected } }.getOrDefault(false)
             }
             if (failedId != null) cancelOperations(affected)
             affected.forEach { watcherJobs.remove(it)?.cancel() }
@@ -476,8 +551,21 @@ class SshRuntimeRunner(
     }
 
     private suspend fun record(configId: UUID, generation: Long, level: EventLevel, code: String, key: String) {
+        val events = eventRepository ?: return
+        if (level != EventLevel.ERROR && code !in AlwaysRecordedEvents && !workPolicy.visible.value) {
+            // A flapping link in the background would otherwise write a row per attempt.
+            val now = nowMillis()
+            var suppressed = false
+            lastRecordedAt.compute(configId to code) { _, last ->
+                if (last != null && now - last in 0 until EventThrottleMillis) last.also { suppressed = true } else now
+            }
+            if (suppressed) {
+                workCounters.increment("suppressedEvents")
+                return
+            }
+        }
         runCatching {
-            eventRepository?.record(
+            events.record(
                 TunnelEvent(
                     configId = configId,
                     generation = generation,
@@ -498,6 +586,9 @@ class SshRuntimeRunner(
          * forever, which vendor power monitors flag as frequent background refresh.
          */
         const val StableConnectionMillis = 5 * 60_000L
+        const val EventThrottleMillis = 60_000L
+        const val TransportReconnectTimeoutMillis = 15_000L
+        val AlwaysRecordedEvents = setOf(TunnelEventCode.FAILED, TunnelEventCode.STOPPED)
     }
 }
 

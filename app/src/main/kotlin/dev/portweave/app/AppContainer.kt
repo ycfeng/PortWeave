@@ -17,6 +17,7 @@ import dev.portweave.app.service.RuntimeStateStore
 import dev.portweave.app.service.TunnelServiceClient
 import dev.portweave.tunnel.engine.ssh.SshTunnelBackend
 import dev.portweave.tunnel.engine.stcp.FrpcStcpBackend
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcReconnectGate
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorClient
 import dev.portweave.app.diagnostics.DiagnosticBundleExporter
 
@@ -39,7 +40,15 @@ class AppContainer(application: Application) {
     val workPolicy = dev.portweave.tunnel.engine.RuntimeWorkPolicy(runtimeStateStore.workCounters)
     val sshTunnelBackend = SshTunnelBackend(workPolicy)
     val stcpBackend = FrpcStcpBackend(
-        clientFactory = { KotlinFrpcStcpVisitorClient(application) },
+        clientFactory = {
+            // The control connection reconnects on its own; route its waits through the same tiers and dormancy.
+            KotlinFrpcStcpVisitorClient(
+                application,
+                FrpcReconnectGate { attempt, defaultDelayMillis ->
+                    workPolicy.awaitTransportReconnect(attempt, defaultDelayMillis)
+                },
+            )
+        },
         workPolicy = workPolicy,
     )
     val tunnelServiceClient = TunnelServiceClient(application)
